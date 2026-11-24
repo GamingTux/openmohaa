@@ -24,6 +24,10 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #ifndef __TR_EXTRAMATH_H__
 #define __TR_EXTRAMATH_H__
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef vec_t mat4_t[16];
 typedef int ivec2_t[2];
 typedef int ivec3_t[3];
@@ -99,5 +103,9 @@ void BoundingSphereOfSpheres(vec3_t origin1, float radius1, vec3_t origin2, floa
 int NextPowerOfTwo(int in);
 unsigned short FloatToHalf(float in);
 float HalfToFloat(unsigned short in);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

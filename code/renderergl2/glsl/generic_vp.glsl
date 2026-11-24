@@ -37,6 +37,20 @@ uniform vec3   u_TCGen0Vector0;
 uniform vec3   u_TCGen0Vector1;
 #endif
 
+#if defined(USE_MULTITEXTURE)
+uniform int    u_TCGen1;
+uniform vec3   u_TCGen1Vector0;
+uniform vec3   u_TCGen1Vector1;
+uniform vec4   u_Bundle1TexMatrix0;
+uniform vec4   u_Bundle1TexMatrix1;
+uniform vec4   u_Bundle1TexMatrix2;
+uniform vec4   u_Bundle1TexMatrix3;
+uniform vec4   u_Bundle1TexMatrix4;
+uniform vec4   u_Bundle1TexMatrix5;
+uniform vec4   u_Bundle1TexMatrix6;
+uniform vec4   u_Bundle1TexMatrix7;
+#endif
+
 #if defined(USE_FOG)
 uniform vec4   u_FogDistance;
 uniform vec4   u_FogDepth;
@@ -53,6 +67,8 @@ uniform float  u_Time;
 uniform mat4   u_ModelViewProjectionMatrix;
 uniform vec4   u_BaseColor;
 uniform vec4   u_VertColor;
+uniform vec2   u_FarplaneFogParams;
+uniform vec4   u_WindParams;
 
 #if defined(USE_RGBAGEN)
 uniform int    u_ColorGen;
@@ -70,7 +86,14 @@ uniform mat4 u_BoneMatrix[MAX_GLSL_BONES];
 #endif
 
 varying vec2   var_DiffuseTex;
+#if defined(USE_MULTITEXTURE)
+varying vec2   var_TexCoord1;
+#endif
 varying vec4   var_Color;
+varying float  var_FogFactor;
+#if defined(USE_SOFT_PARTICLES)
+varying float  var_ParticleDepth;
+#endif
 
 #if defined(USE_DEFORM_VERTEXES)
 vec3 DeformPosition(const vec3 pos, const vec3 normal, const vec2 st)
@@ -137,6 +160,23 @@ vec2 GenTexCoords(int TCGen, vec3 position, vec3 normal, vec3 TCGenVector0, vec3
 		vec2 ref = reflect(viewer, normal).yz;
 		tex.s = ref.x * -0.5 + 0.5;
 		tex.t = ref.y *  0.5 + 0.5;
+	}
+	else if (TCGen == TCGEN_ENVIRONMENT_MAPPED2)
+	{
+		vec3 viewer = normalize(u_LocalViewOrigin - position);
+		float d = dot(normal, viewer);
+		vec3 reflected = (d > 0.0) ? viewer : (viewer - 2.0 * d * normal);
+		tex.s = 0.5 + reflected.y * 0.5;
+		tex.t = 0.5 - reflected.z * 0.5;
+	}
+	else if (TCGen == TCGEN_SUN_REFLECTION)
+	{
+		vec3 viewer = normalize(position - u_LocalViewOrigin);
+		float d = dot(viewer, normal);
+		vec3 reflected = (d > 0.0) ? viewer : (viewer - 2.0 * d * normal);
+		vec3 sunAxis2 = cross(TCGenVector0, TCGenVector1);
+		vec3 sunRef = TCGenVector0 * reflected.x + TCGenVector1 * reflected.z - sunAxis2 * reflected.y;
+		tex = sunRef.yz + vec2(0.5);
 	}
 	else if (TCGen == TCGEN_VECTOR)
 	{
@@ -244,7 +284,31 @@ void main()
 	position = DeformPosition(position, normal, attr_TexCoord0.st);
 #endif
 
+	if (u_WindParams.x > 0.0)
+	{
+		float wPhase = u_WindParams.y + u_WindParams.z + dot(position.xy, vec2(0.032, 0.024)) + position.z * 0.018;
+		if (u_WindParams.w > 1.5)
+		{
+			float pin = clamp(attr_TexCoord0.t, 0.0, 1.0);
+			float wave = sin(wPhase * 2.1 + attr_TexCoord0.t * 4.2) + 0.35 * sin(wPhase * 4.5 + attr_TexCoord0.s * 3.0);
+			vec3 windDir = (dot(normal, normal) > 0.01) ? normalize(normal) : vec3(1.0, 0.4, 0.0);
+			position += windDir * (wave * u_WindParams.x * pin);
+		}
+		else
+		{
+			float sway = sin(wPhase) + 0.35 * sin(wPhase * 2.3 + 1.1);
+			float flutter = sin(wPhase * 3.7 + position.x * 0.11) * 0.25;
+			float heightMask = clamp((position.z + 32.0) * 0.010, 0.20, 1.0);
+			position.x += (sway + flutter) * u_WindParams.x * heightMask;
+			position.y += (sway * 0.65 - flutter) * u_WindParams.x * heightMask;
+		}
+	}
+
 	gl_Position = u_ModelViewProjectionMatrix * vec4(position, 1.0);
+	var_FogFactor = (gl_Position.w - u_FarplaneFogParams.x) * u_FarplaneFogParams.y;
+#if defined(USE_SOFT_PARTICLES)
+	var_ParticleDepth = gl_Position.w;
+#endif
 
 #if defined(USE_TCGEN)
 	vec2 tex = GenTexCoords(u_TCGen0, position, normal, u_TCGen0Vector0, u_TCGen0Vector1);
@@ -265,6 +329,20 @@ void main()
 	var_DiffuseTex = ModTexCoords(tex, position, diffuseTexMatrix);
 #else
     var_DiffuseTex = tex;
+#endif
+
+#if defined(USE_MULTITEXTURE)
+	vec2 tex1 = GenTexCoords(u_TCGen1, position, normal, u_TCGen1Vector0, u_TCGen1Vector1);
+	vec4 bundle1TexMatrix[8];
+	bundle1TexMatrix[0] = u_Bundle1TexMatrix0;
+	bundle1TexMatrix[1] = u_Bundle1TexMatrix1;
+	bundle1TexMatrix[2] = u_Bundle1TexMatrix2;
+	bundle1TexMatrix[3] = u_Bundle1TexMatrix3;
+	bundle1TexMatrix[4] = u_Bundle1TexMatrix4;
+	bundle1TexMatrix[5] = u_Bundle1TexMatrix5;
+	bundle1TexMatrix[6] = u_Bundle1TexMatrix6;
+	bundle1TexMatrix[7] = u_Bundle1TexMatrix7;
+	var_TexCoord1 = ModTexCoords(tex1, position, bundle1TexMatrix);
 #endif
 
 #if defined(USE_RGBAGEN)

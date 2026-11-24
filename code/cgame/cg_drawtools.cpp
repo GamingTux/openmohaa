@@ -475,6 +475,8 @@ void CG_DrawOverlayMiddle(qhandle_t handle, float fAlpha)
 void CG_DrawOverlayFullScreen(qhandle_t handle, float fAlpha)
 {
     int    iHalfWidth, iHalfHeight;
+    int    iWidthOffset = 0;
+    int    iDrawWidth   = cgs.glconfig.vidWidth;
     vec4_t color;
 
     color[0] = 1.0;
@@ -483,13 +485,40 @@ void CG_DrawOverlayFullScreen(qhandle_t handle, float fAlpha)
     color[3] = fAlpha;
     cgi.R_SetColor(color);
 
-    iHalfHeight = cgs.glconfig.vidHeight >> 1;
-    iHalfWidth  = cgs.glconfig.vidWidth >> 1;
+    // Keep circular binoculars aspect-correct (4:3) on widescreen monitors
+    if (cgs.glconfig.vidWidth * 3 > cgs.glconfig.vidHeight * 4) {
+        iDrawWidth   = (cgs.glconfig.vidHeight * 4) / 3;
+        iWidthOffset = (cgs.glconfig.vidWidth - iDrawWidth) >> 1;
+    }
 
-    cgi.R_DrawStretchPic(0.0, 0.0, iHalfWidth, iHalfHeight, 0.0, 0.0, 1.0, 1.0, handle);
-    cgi.R_DrawStretchPic(iHalfWidth, 0.0, iHalfWidth, iHalfHeight, 1.0, 0.0, 0.0, 1.0, handle);
-    cgi.R_DrawStretchPic(0.0, iHalfHeight, iHalfWidth, iHalfHeight, 0.0, 1.0, 1.0, 0.0, handle);
-    cgi.R_DrawStretchPic(iHalfWidth, iHalfHeight, iHalfWidth, iHalfHeight, 1.0, 1.0, 0.0, 0.0, handle);
+    iHalfHeight = cgs.glconfig.vidHeight >> 1;
+    iHalfWidth  = iDrawWidth >> 1;
+
+    cgi.R_DrawStretchPic(iWidthOffset, 0.0, iHalfWidth, iHalfHeight, 0.0, 0.0, 1.0, 1.0, handle);
+    cgi.R_DrawStretchPic(iWidthOffset + iHalfWidth, 0.0, iHalfWidth, iHalfHeight, 1.0, 0.0, 0.0, 1.0, handle);
+    cgi.R_DrawStretchPic(iWidthOffset, iHalfHeight, iHalfWidth, iHalfHeight, 0.0, 1.0, 1.0, 0.0, handle);
+    cgi.R_DrawStretchPic(iWidthOffset + iHalfWidth, iHalfHeight, iHalfWidth, iHalfHeight, 1.0, 1.0, 0.0, 0.0, handle);
+
+    if (iWidthOffset > 0) {
+        int rightStart = iWidthOffset + (iHalfWidth << 1);
+        color[0] = 0.0;
+        color[1] = 0.0;
+        color[2] = 0.0;
+        cgi.R_SetColor(color);
+
+        cgi.R_DrawStretchPic(0.0, 0.0, iWidthOffset, cgs.glconfig.vidHeight, 0.0, 0.0, 1.0, 1.0, cgs.media.lagometerShader);
+        cgi.R_DrawStretchPic(
+            rightStart,
+            0.0,
+            cgs.glconfig.vidWidth - rightStart,
+            cgs.glconfig.vidHeight,
+            0.0,
+            0.0,
+            1.0,
+            1.0,
+            cgs.media.lagometerShader
+        );
+    }
 }
 
 void CG_DrawZoomOverlay()

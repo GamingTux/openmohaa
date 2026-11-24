@@ -165,13 +165,9 @@ static void R_DrawElements( int numIndexes, const glIndex_t *indexes ) {
 
 	primitives = r_primitives->integer;
 
-	// default is to use triangles if compiled vertex arrays are present
+	// default to single glDrawElements(GL_TRIANGLES) call
 	if ( primitives == 0 ) {
-		if ( qglLockArraysEXT ) {
-			primitives = 2;
-		} else {
-			primitives = 1;
-		}
+		primitives = 2;
 	}
 
 
@@ -1740,14 +1736,8 @@ void RB_StageIteratorLightmappedMultitextureUnfogged( void ) {
 	GL_State( GLS_DEFAULT | (tess.xstages[0]->stateBits & (GLS_ATEST_BITS | GLS_FOG_BITS)));
 	qglVertexPointer( 3, GL_FLOAT, 16, input->xyz );
 
-#ifdef REPLACE_MODE
 	qglDisableClientState( GL_COLOR_ARRAY );
-	qglColor3f( 1, 1, 1 );
-	qglShadeModel( GL_FLAT );
-#else
-	qglEnableClientState( GL_COLOR_ARRAY );
-	qglColorPointer( 4, GL_UNSIGNED_BYTE, 0, tess.constantColor255 );
-#endif
+	qglColor4f( 1.0f, 1.0f, 1.0f, 1.0f );
 
 	//
 	// select base stage

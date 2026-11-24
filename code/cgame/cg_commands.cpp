@@ -5926,6 +5926,13 @@ void ClientGameCommandManager::EventViewKick(Event *ev)
     } else if (cg.viewkick[1] < -fYawMax) {
         cg.viewkick[1] = -fYawMax;
     }
+
+    if (cg_modernGunplay && cg_modernGunplay->integer) {
+        float kickMag        = fabsf(vkmax[0]) + fabsf(vkmin[0]);
+        cg.muzzleLightTime   = cg.time;
+        cg.muzzleLightRadius = Com_Clamp(165.0f, 340.0f, 175.0f + kickMag * 32.0f);
+        cg.recoilRoll        = Com_Clamp(-2.0f, 2.0f, cg.recoilRoll + crandom() * (0.35f + kickMag * 0.16f));
+    }
 }
 
 int ClientGameCommandManager::IdForTempModel(const ctempmodel_t *model)

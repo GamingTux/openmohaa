@@ -5582,7 +5582,7 @@ void Actor::MovePath(float fMoveSpeed)
                 m_iWallDodgeTimeout = level.inttime + 1000;
             }
         } else {
-            if (m_WallDir >= 0) {
+            if ((signed char)m_WallDir >= 0) {
                 mm.desired_dir[0] = mm.obstacle_normal[1];
                 mm.desired_dir[1] = -mm.obstacle_normal[0];
             } else {
@@ -10715,6 +10715,30 @@ Vector Actor::GunTarget(bool bNoCollision, const vec3_t position, const vec3_t f
 
     if (m_State == ACTOR_STATE_TURRET_RETARGET_SNIPER_NODE) {
         scatterMult = aifSupressScatter->value;
+    }
+
+    if (player && g_aiFairness && g_aiFairness->integer) {
+        // 1) Human aim-settling window right after spotting/re-acquiring player
+        //    (prevents unfair frame-1 instant laser headshots when peeking)
+        int acquireTime = (m_iEnemyVisibleChangeTime > m_iEnemyChangeTime) ? m_iEnemyVisibleChangeTime : m_iEnemyChangeTime;
+        int elapsed     = level.inttime - acquireTime;
+        if (elapsed >= 0 && elapsed < 800) {
+            float settle = 1.0f - (float)elapsed / 800.0f;
+            scatterMult *= (1.0f + 0.75f * settle);
+            fCoverFactor *= (1.0f - 0.25f * settle);
+        }
+
+        // 2) Moving-target tracking scatter (rewards sprinting/dashing between cover)
+        float moveSpeed = VectorLength2D(player->velocity);
+        if (moveSpeed > 80.0f) {
+            float moveFactor = Com_Clamp(0.0f, 1.0f, (moveSpeed - 80.0f) / 180.0f);
+            scatterMult *= (1.0f + 0.35f * moveFactor);
+        }
+
+        // 3) Soften extreme-range pinpoint sniper lock beyond 950 units
+        if (vDelta.length() > 950.0f && fCoverFactor > 0.82f) {
+            fCoverFactor = 0.82f + (fCoverFactor - 0.82f) * 0.45f;
+        }
     }
 
     Vector error(0, 0, 0);

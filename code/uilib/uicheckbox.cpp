@@ -105,7 +105,7 @@ void UICheckBox::Draw()
     }
 
     float titleX = m_indent * 1.5f + m_check_width;
-    float titleY = (m_frame.size.height / m_vVirtualScale[1] - getTitleHeight()) * 0.5f - 1.0f;
+    float titleY = ((m_frame.size.height - getTitleHeight()) * 0.5f) / m_vVirtualScale[1];
     return DrawTitle(titleX, titleY);
 }
 

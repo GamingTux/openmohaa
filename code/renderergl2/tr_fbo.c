@@ -294,7 +294,7 @@ void FBO_Init(void)
 		FBO_AttachImage(tr.msaaResolveFbo, tr.renderDepthImage, GL_DEPTH_ATTACHMENT, 0);
 		R_CheckFBO(tr.msaaResolveFbo);
 	}
-	else if (r_hdr->integer)
+	else
 	{
 		tr.renderFbo = FBO_Create("_render", tr.renderDepthImage->width, tr.renderDepthImage->height);
 		FBO_AttachImage(tr.renderFbo, tr.renderImage, GL_COLOR_ATTACHMENT0, 0);
@@ -331,8 +331,16 @@ void FBO_Init(void)
 		for( i = 0; i < MAX_DRAWN_PSHADOWS; i++)
 		{
 			tr.pshadowFbos[i] = FBO_Create(va("_shadowmap%d", i), tr.pshadowMaps[i]->width, tr.pshadowMaps[i]->height);
-			// FIXME: this next line wastes 16mb with 16x512x512 sun shadow maps, skip if OpenGL 4.3+ or ARB_framebuffer_no_attachments
-			FBO_CreateBuffer(tr.pshadowFbos[i], GL_RGBA8, 0, 0);
+			FBO_Bind(tr.pshadowFbos[i]);
+			if (QGL_VERSION_ATLEAST(3, 0))
+			{
+				qglDrawBuffer(GL_NONE);
+				qglReadBuffer(GL_NONE);
+			}
+			else
+			{
+				FBO_CreateBuffer(tr.pshadowFbos[i], GL_RGBA8, 0, 0);
+			}
 			FBO_AttachImage(tr.pshadowFbos[i], tr.pshadowMaps[i], GL_DEPTH_ATTACHMENT, 0);
 			R_CheckFBO(tr.pshadowFbos[i]);
 		}
@@ -343,9 +351,16 @@ void FBO_Init(void)
 		for (i = 0; i < 4; i++)
 		{
 			tr.sunShadowFbo[i] = FBO_Create("_sunshadowmap", tr.sunShadowDepthImage[i]->width, tr.sunShadowDepthImage[i]->height);
-			// FIXME: this next line wastes 16mb with 4x1024x1024 sun shadow maps, skip if OpenGL 4.3+ or ARB_framebuffer_no_attachments
-			// This at least gets sun shadows working on older GPUs (Intel)
-			FBO_CreateBuffer(tr.sunShadowFbo[i], GL_RGBA8, 0, 0);
+			FBO_Bind(tr.sunShadowFbo[i]);
+			if (QGL_VERSION_ATLEAST(3, 0))
+			{
+				qglDrawBuffer(GL_NONE);
+				qglReadBuffer(GL_NONE);
+			}
+			else
+			{
+				FBO_CreateBuffer(tr.sunShadowFbo[i], GL_RGBA8, 0, 0);
+			}
 			FBO_AttachImage(tr.sunShadowFbo[i], tr.sunShadowDepthImage[i], GL_DEPTH_ATTACHMENT, 0);
 			R_CheckFBO(tr.sunShadowFbo[i]);
 		}
@@ -390,6 +405,50 @@ void FBO_Init(void)
 			FBO_AttachImage(tr.quarterFbo[i], tr.quarterImage[i], GL_COLOR_ATTACHMENT0, 0);
 			R_CheckFBO(tr.quarterFbo[i]);
 		}
+	}
+
+	if (tr.bloomImage[0])
+	{
+		for (i = 0; i < 2; i++)
+		{
+			tr.bloomFbo[i] = FBO_Create(va("_bloom%d", i), tr.bloomImage[i]->width, tr.bloomImage[i]->height);
+			FBO_AttachImage(tr.bloomFbo[i], tr.bloomImage[i], GL_COLOR_ATTACHMENT0, 0);
+			R_CheckFBO(tr.bloomFbo[i]);
+		}
+	}
+
+	if (tr.softDepthImage)
+	{
+		tr.softDepthFbo = FBO_Create("_softdepth", tr.softDepthImage->width, tr.softDepthImage->height);
+		FBO_Bind(tr.softDepthFbo);
+		if (QGL_VERSION_ATLEAST(3, 0))
+		{
+			qglDrawBuffer(GL_NONE);
+			qglReadBuffer(GL_NONE);
+		}
+		else
+		{
+			FBO_CreateBuffer(tr.softDepthFbo, GL_RGBA8, 0, 0);
+		}
+		FBO_AttachImage(tr.softDepthFbo, tr.softDepthImage, GL_DEPTH_ATTACHMENT, 0);
+		R_CheckFBO(tr.softDepthFbo);
+	}
+
+	if (tr.piSunShadowImage)
+	{
+		tr.piSunShadowFbo = FBO_Create("_pisunshadow", tr.piSunShadowImage->width, tr.piSunShadowImage->height);
+		FBO_Bind(tr.piSunShadowFbo);
+		if (QGL_VERSION_ATLEAST(3, 0))
+		{
+			qglDrawBuffer(GL_NONE);
+			qglReadBuffer(GL_NONE);
+		}
+		else
+		{
+			FBO_CreateBuffer(tr.piSunShadowFbo, GL_RGBA8, 0, 0);
+		}
+		FBO_AttachImage(tr.piSunShadowFbo, tr.piSunShadowImage, GL_DEPTH_ATTACHMENT, 0);
+		R_CheckFBO(tr.piSunShadowFbo);
 	}
 
 	if (tr.hdrDepthImage)
@@ -559,6 +618,16 @@ void FBO_BlitFromTexture(struct image_s *src, vec4_t inSrcTexCorners, vec2_t inS
 	}
 
 	FBO_Bind(dst);
+
+	// On TBDR GPUs (e.g. Raspberry Pi 5 VideoCore VII), discard stale color tiles on-chip
+	// before an opaque fullscreen overwrite so the previous contents aren't loaded from RAM.
+	if (dst != NULL && (dst->colorImage[0] || dst->colorBuffers[0]) && glRefConfig.invalidateFramebuffer
+		&& (blend & (GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS)) == 0
+		&& (!inDstBox || (inDstBox[0] == 0 && inDstBox[1] == 0 && inDstBox[2] == width && inDstBox[3] == height)))
+	{
+		const GLenum colorAtt = GL_COLOR_ATTACHMENT0;
+		qglInvalidateFramebuffer_ext(GL_FRAMEBUFFER, 1, &colorAtt);
+	}
 
 	qglViewport( 0, 0, width, height );
 	qglScissor( 0, 0, width, height );

@@ -40,8 +40,11 @@ CLASS_DECLARATION(Listener, UILayout, NULL) {
 UILayout::UILayout()
 {
     BogusFunction();
-    m_script   = NULL;
-    m_filename = NULL;
+    m_script           = NULL;
+    m_filename         = "";
+    m_currentcontainer = NULL;
+    m_currentwidget    = NULL;
+    m_bLoaded          = false;
 }
 
 UILayout::UILayout(const char *filename)
@@ -223,6 +226,40 @@ void UILayout::Load(const char *filename, bool bFullLoad)
     ProcessCommands(bFullLoad);
 
     m_bLoaded = bFullLoad;
+
+    delete m_script;
+    m_script = NULL;
+}
+
+void UILayout::LoadBuffer(const char *buffer, size_t length, const char *name)
+{
+    m_bLoaded = true;
+
+    m_script = new Script;
+    m_script->Parse(buffer, length, name);
+
+    ProcessCommands(true);
+
+    m_bLoaded = true;
+
+    delete m_script;
+    m_script = NULL;
+}
+
+void UILayout::AppendToContainer(UIWidgetContainer *container, const char *buffer, size_t length, const char *name)
+{
+    if (!container || !buffer || !length) {
+        return;
+    }
+
+    m_bLoaded          = true;
+    m_currentcontainer = container;
+    m_currentwidget    = container;
+
+    m_script = new Script;
+    m_script->Parse(buffer, length, name);
+
+    ProcessCommands(true);
 
     delete m_script;
     m_script = NULL;

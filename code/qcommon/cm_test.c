@@ -93,6 +93,8 @@ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
 	int			brushnum;
 	cLeaf_t		*leaf;
 	cbrush_t	*b;
+	const int	tid = CM_GetThreadId();
+	const int	checkcount = cm.checkcount[tid];
 
 	leafnum = -1 - nodenum;
 
@@ -101,10 +103,10 @@ void CM_StoreBrushes( leafList_t *ll, int nodenum ) {
 	for ( k = 0 ; k < leaf->numLeafBrushes ; k++ ) {
 		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
 		b = &cm.brushes[brushnum];
-		if ( b->checkcount == cm.checkcount ) {
+		if ( b->checkcount[tid] == checkcount ) {
 			continue;	// already checked this brush in another leaf
 		}
-		b->checkcount = cm.checkcount;
+		b->checkcount[tid] = checkcount;
 		for ( i = 0 ; i < 3 ; i++ ) {
 			if ( b->bounds[0][i] >= ll->bounds[1][i] || b->bounds[1][i] <= ll->bounds[0][i] ) {
 				break;
@@ -171,7 +173,7 @@ CM_BoxLeafnums
 int	CM_BoxLeafnums( const vec3_t mins, const vec3_t maxs, int *list, int listsize, int *lastLeaf) {
 	leafList_t	ll;
 
-	cm.checkcount++;
+	cm.checkcount[CM_GetThreadId()]++;
 
 	VectorCopy( mins, ll.bounds[0] );
 	VectorCopy( maxs, ll.bounds[1] );
@@ -196,7 +198,7 @@ CM_BoxBrushes
 int CM_BoxBrushes( const vec3_t mins, const vec3_t maxs, cbrush_t **list, int listsize ) {
 	leafList_t	ll;
 
-	cm.checkcount++;
+	cm.checkcount[CM_GetThreadId()]++;
 
 	VectorCopy( mins, ll.bounds[0] );
 	VectorCopy( maxs, ll.bounds[1] );

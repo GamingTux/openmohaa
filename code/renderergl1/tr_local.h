@@ -1999,6 +1999,7 @@ void R_TransformDlights( int count, dlight_t *dl, orientationr_t *ori );
 void RB_Light_Real(unsigned char* colors);
 void RB_Sphere_BuildDLights();
 void RB_Sphere_SetupEntity();
+void RB_Sphere_SetupEntityFor(trRefEntity_t *ent, sphereor_t *pSphere);
 void RB_Grid_SetupEntity();
 void RB_Grid_SetupStaticModel();
 void RB_Light_Fullbright(unsigned char* colors);

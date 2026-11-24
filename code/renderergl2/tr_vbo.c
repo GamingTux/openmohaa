@@ -410,6 +410,25 @@ void R_BindNullVao(void)
 }
 
 
+#define TESS_VBO_RING_BYTES (8 * 1024 * 1024)
+#define TESS_IBO_RING_BYTES (4 * 1024 * 1024)
+
+#define TESS_PERSIST_REGIONS        4
+#define TESS_PERSIST_REGION_VERTS   65536
+#define TESS_PERSIST_TOTAL_VERTS    (TESS_PERSIST_REGIONS * TESS_PERSIST_REGION_VERTS)
+#define TESS_PERSIST_REGION_INDEXES 262144
+#define TESS_PERSIST_TOTAL_INDEXES  (TESS_PERSIST_REGIONS * TESS_PERSIST_REGION_INDEXES)
+
+static size_t tessVertexRingByteOffset = 0;
+static size_t tessIndexRingByteOffset = 0;
+
+static byte      *tessMappedVertexPtr = NULL;
+static glIndex_t *tessMappedIndexPtr = NULL;
+static int        tessRingRegion = 0;
+static int        tessRingVertPos = 0;
+static int        tessRingIdxPos = 0;
+static GLsync     tessRingFences[TESS_PERSIST_REGIONS] = { NULL, NULL, NULL, NULL };
+
 /*
 ============
 R_InitVaos
@@ -418,26 +437,101 @@ R_InitVaos
 void R_InitVaos(void)
 {
 	int             vertexesSize, indexesSize;
-	int             offset;
+	int             i;
 
 	ri.Printf(PRINT_ALL, "------- R_InitVaos -------\n");
 
 	tr.numVaos = 0;
+	tessVertexRingByteOffset = 0;
+	tessIndexRingByteOffset = 0;
+	tessMappedVertexPtr = NULL;
+	tessMappedIndexPtr = NULL;
+	tessRingRegion = 0;
+	tessRingVertPos = 0;
+	tessRingIdxPos = 0;
+	for (i = 0; i < TESS_PERSIST_REGIONS; i++)
+		tessRingFences[i] = NULL;
 
-	vertexesSize  = sizeof(tess.xyz[0]);
-	vertexesSize += sizeof(tess.normal[0]);
-	vertexesSize += sizeof(tess.tangent[0]);
-	vertexesSize += sizeof(tess.color[0]);
-	vertexesSize += sizeof(tess.texCoords[0]);
-	vertexesSize += sizeof(tess.lightCoords[0]);
-	vertexesSize += sizeof(tess.lightdir[0]);
-	vertexesSize *= SHADER_MAX_VERTEXES;
+	if (glRefConfig.persistentRing && glRefConfig.vertexArrayObject)
+	{
+		vao_t *vao;
+		GLbitfield storageFlags = GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT;
+		size_t strideSum = sizeof(tess.xyz[0])
+			+ sizeof(tess.normal[0])
+			+ sizeof(tess.tangent[0])
+			+ sizeof(tess.texCoords[0])
+			+ sizeof(tess.lightCoords[0])
+			+ sizeof(tess.color[0])
+			+ sizeof(tess.lightdir[0]);
+		int offset = 0;
 
-	indexesSize = sizeof(tess.indexes[0]) * SHADER_MAX_INDEXES;
+		vertexesSize = (int)(strideSum * TESS_PERSIST_TOTAL_VERTS);
+		indexesSize  = (int)(sizeof(tess.indexes[0]) * TESS_PERSIST_TOTAL_INDEXES);
 
-	tess.vao = R_CreateVao("tessVertexArray_VAO", NULL, vertexesSize, NULL, indexesSize, VAO_USAGE_DYNAMIC);
+		R_IssuePendingRenderCommands();
 
-	offset = 0;
+		vao = tr.vaos[tr.numVaos] = ri.Hunk_Alloc(sizeof(*vao), h_low);
+		tr.numVaos++;
+		memset(vao, 0, sizeof(*vao));
+		Q_strncpyz(vao->name, "tessVertexArray_VAO", sizeof(vao->name));
+
+		qglGenVertexArrays(1, &vao->vao);
+		qglBindVertexArray(vao->vao);
+
+		vao->vertexesSize = vertexesSize;
+		qglGenBuffers(1, &vao->vertexesVBO);
+		qglBindBuffer(GL_ARRAY_BUFFER, vao->vertexesVBO);
+		qglBufferStorage(GL_ARRAY_BUFFER, vertexesSize, NULL, storageFlags);
+		tessMappedVertexPtr = (byte *)qglMapBufferRange(GL_ARRAY_BUFFER, 0, vertexesSize, storageFlags);
+
+		vao->indexesSize = indexesSize;
+		qglGenBuffers(1, &vao->indexesIBO);
+		qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vao->indexesIBO);
+		qglBufferStorage(GL_ELEMENT_ARRAY_BUFFER, indexesSize, NULL, storageFlags);
+		tessMappedIndexPtr = (glIndex_t *)qglMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, indexesSize, storageFlags);
+
+		if (tessMappedVertexPtr && tessMappedIndexPtr)
+		{
+			tess.vao = vao;
+			glState.currentVao = vao;
+
+			tess.vao->attribs[ATTR_INDEX_POSITION      ].offset = offset; offset += sizeof(tess.xyz[0])         * TESS_PERSIST_TOTAL_VERTS;
+			tess.vao->attribs[ATTR_INDEX_NORMAL        ].offset = offset; offset += sizeof(tess.normal[0])      * TESS_PERSIST_TOTAL_VERTS;
+			tess.vao->attribs[ATTR_INDEX_TANGENT       ].offset = offset; offset += sizeof(tess.tangent[0])     * TESS_PERSIST_TOTAL_VERTS;
+			tess.vao->attribs[ATTR_INDEX_TEXCOORD      ].offset = offset; offset += sizeof(tess.texCoords[0])   * TESS_PERSIST_TOTAL_VERTS;
+			tess.vao->attribs[ATTR_INDEX_LIGHTCOORD    ].offset = offset; offset += sizeof(tess.lightCoords[0]) * TESS_PERSIST_TOTAL_VERTS;
+			tess.vao->attribs[ATTR_INDEX_COLOR         ].offset = offset; offset += sizeof(tess.color[0])       * TESS_PERSIST_TOTAL_VERTS;
+			tess.vao->attribs[ATTR_INDEX_LIGHTDIRECTION].offset = offset;
+		}
+		else
+		{
+			// Fallback if persistent mapping failed
+			ri.Printf(PRINT_WARNING, "R_InitVaos: persistent buffer mapping failed, falling back to MapBufferRange\n");
+			qglDeleteVertexArrays(1, &vao->vao);
+			qglDeleteBuffers(1, &vao->vertexesVBO);
+			qglDeleteBuffers(1, &vao->indexesIBO);
+			tr.numVaos--;
+			tessMappedVertexPtr = NULL;
+			tessMappedIndexPtr = NULL;
+			glRefConfig.persistentRing = qfalse;
+		}
+	}
+
+	if (!tessMappedVertexPtr)
+	{
+		vertexesSize = TESS_VBO_RING_BYTES;
+		indexesSize = TESS_IBO_RING_BYTES;
+
+		tess.vao = R_CreateVao("tessVertexArray_VAO", NULL, vertexesSize, NULL, indexesSize, VAO_USAGE_DYNAMIC);
+
+		tess.vao->attribs[ATTR_INDEX_POSITION      ].offset = 0;
+		tess.vao->attribs[ATTR_INDEX_NORMAL        ].offset = 0;
+		tess.vao->attribs[ATTR_INDEX_TANGENT       ].offset = 0;
+		tess.vao->attribs[ATTR_INDEX_TEXCOORD      ].offset = 0;
+		tess.vao->attribs[ATTR_INDEX_LIGHTCOORD    ].offset = 0;
+		tess.vao->attribs[ATTR_INDEX_COLOR         ].offset = 0;
+		tess.vao->attribs[ATTR_INDEX_LIGHTDIRECTION].offset = 0;
+	}
 
 	tess.vao->attribs[ATTR_INDEX_POSITION      ].enabled = 1;
 	tess.vao->attribs[ATTR_INDEX_NORMAL        ].enabled = 1;
@@ -470,14 +564,6 @@ void R_InitVaos(void)
 	tess.vao->attribs[ATTR_INDEX_LIGHTCOORD    ].normalized = GL_FALSE;
 	tess.vao->attribs[ATTR_INDEX_COLOR         ].normalized = GL_TRUE;
 	tess.vao->attribs[ATTR_INDEX_LIGHTDIRECTION].normalized = GL_TRUE;
-
-	tess.vao->attribs[ATTR_INDEX_POSITION      ].offset = offset; offset += sizeof(tess.xyz[0])         * SHADER_MAX_VERTEXES;
-	tess.vao->attribs[ATTR_INDEX_NORMAL        ].offset = offset; offset += sizeof(tess.normal[0])      * SHADER_MAX_VERTEXES;
-	tess.vao->attribs[ATTR_INDEX_TANGENT       ].offset = offset; offset += sizeof(tess.tangent[0])     * SHADER_MAX_VERTEXES;
-	tess.vao->attribs[ATTR_INDEX_TEXCOORD      ].offset = offset; offset += sizeof(tess.texCoords[0])   * SHADER_MAX_VERTEXES;
-	tess.vao->attribs[ATTR_INDEX_LIGHTCOORD    ].offset = offset; offset += sizeof(tess.lightCoords[0]) * SHADER_MAX_VERTEXES;
-	tess.vao->attribs[ATTR_INDEX_COLOR         ].offset = offset; offset += sizeof(tess.color[0])       * SHADER_MAX_VERTEXES;
-	tess.vao->attribs[ATTR_INDEX_LIGHTDIRECTION].offset = offset;
 
 	tess.vao->attribs[ATTR_INDEX_POSITION      ].stride = sizeof(tess.xyz[0]);
 	tess.vao->attribs[ATTR_INDEX_NORMAL        ].stride = sizeof(tess.normal[0]);
@@ -517,6 +603,19 @@ void R_ShutdownVaos(void)
 	ri.Printf(PRINT_ALL, "------- R_ShutdownVaos -------\n");
 
 	R_BindNullVao();
+	R_FreeStaticModelVao();
+
+	for (i = 0; i < TESS_PERSIST_REGIONS; i++)
+	{
+		if (tessRingFences[i])
+		{
+			if (qglDeleteSync)
+				qglDeleteSync(tessRingFences[i]);
+			tessRingFences[i] = NULL;
+		}
+	}
+	tessMappedVertexPtr = NULL;
+	tessMappedIndexPtr = NULL;
 
 	for(i = 0; i < tr.numVaos; i++)
 	{
@@ -584,6 +683,45 @@ void R_VaoList_f(void)
 
 /*
 ==============
+R_VaoRingEndFrame
+
+Advance persistent ring buffer once per frame AFTER SwapBuffers has already
+flushed the tile pass, avoiding mid-frame glFenceSync flushes on TBDR GPUs.
+==============
+*/
+void R_VaoRingEndFrame(void)
+{
+	int regionVertStart;
+	int regionIdxStart;
+
+	if (!tessMappedVertexPtr || !tessMappedIndexPtr)
+		return;
+
+	regionVertStart = tessRingRegion * TESS_PERSIST_REGION_VERTS;
+	regionIdxStart  = tessRingRegion * TESS_PERSIST_REGION_INDEXES;
+
+	if (tessRingVertPos == regionVertStart && tessRingIdxPos == regionIdxStart)
+		return;
+
+	if (tessRingFences[tessRingRegion])
+		qglDeleteSync(tessRingFences[tessRingRegion]);
+	tessRingFences[tessRingRegion] = qglFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+
+	tessRingRegion = (tessRingRegion + 1) % TESS_PERSIST_REGIONS;
+
+	if (tessRingFences[tessRingRegion])
+	{
+		qglClientWaitSync(tessRingFences[tessRingRegion], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+		qglDeleteSync(tessRingFences[tessRingRegion]);
+		tessRingFences[tessRingRegion] = NULL;
+	}
+
+	tessRingVertPos = tessRingRegion * TESS_PERSIST_REGION_VERTS;
+	tessRingIdxPos  = tessRingRegion * TESS_PERSIST_REGION_INDEXES;
+}
+
+/*
+==============
 RB_UpdateTessVao
 
 Adapted from Tess_UpdateVBOs from xreal
@@ -597,59 +735,192 @@ void RB_UpdateTessVao(unsigned int attribBits)
 
 	backEnd.pc.c_dynamicVaoDraws++;
 
-	// update the default VAO
+	// update the default VAO using a zero-stall streaming ring buffer
 	if(tess.numVertexes > 0 && tess.numVertexes <= SHADER_MAX_VERTEXES && tess.numIndexes > 0 && tess.numIndexes <= SHADER_MAX_INDEXES)
 	{
 		int attribIndex;
-		int attribUpload;
 
 		R_BindVao(tess.vao);
-
-		// orphan old vertex buffer so we don't stall on it
-		qglBufferData(GL_ARRAY_BUFFER, tess.vao->vertexesSize, NULL, GL_DYNAMIC_DRAW);
 
 		// if nothing to set, set everything
 		if(!(attribBits & ATTR_BITS))
 			attribBits = ATTR_BITS;
 
-		attribUpload = attribBits;
-
-		for (attribIndex = 0; attribIndex < ATTR_INDEX_COUNT; attribIndex++)
+		if (tessMappedVertexPtr && tessMappedIndexPtr)
 		{
-			uint32_t attribBit = 1 << attribIndex;
-			vaoAttrib_t *vAtb = &tess.vao->attribs[attribIndex];
+			int regionVertEnd = (tessRingRegion + 1) * TESS_PERSIST_REGION_VERTS;
+			int regionIdxEnd  = (tessRingRegion + 1) * TESS_PERSIST_REGION_INDEXES;
+			uint32_t diff;
 
-			if (attribUpload & attribBit)
+			if (tessRingVertPos + tess.numVertexes > regionVertEnd || tessRingIdxPos + tess.numIndexes > regionIdxEnd)
 			{
-				// note: tess has a VBO where stride == size
-				qglBufferSubData(GL_ARRAY_BUFFER, vAtb->offset, tess.numVertexes * vAtb->stride, tess.attribPointers[attribIndex]);
+				if (tessRingFences[tessRingRegion])
+					qglDeleteSync(tessRingFences[tessRingRegion]);
+				tessRingFences[tessRingRegion] = qglFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+
+				tessRingRegion = (tessRingRegion + 1) % TESS_PERSIST_REGIONS;
+
+				if (tessRingFences[tessRingRegion])
+				{
+					qglClientWaitSync(tessRingFences[tessRingRegion], GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ULL);
+					qglDeleteSync(tessRingFences[tessRingRegion]);
+					tessRingFences[tessRingRegion] = NULL;
+				}
+
+				tessRingVertPos = tessRingRegion * TESS_PERSIST_REGION_VERTS;
+				tessRingIdxPos  = tessRingRegion * TESS_PERSIST_REGION_INDEXES;
 			}
 
-			if (attribBits & attribBit)
+			// Direct zero-syscall writes into persistent coherent GPU memory
+			for (attribIndex = 0; attribIndex < ATTR_INDEX_COUNT; attribIndex++)
 			{
-				if (!glRefConfig.vertexArrayObject)
-					qglVertexAttribPointer(attribIndex, vAtb->count, vAtb->type, vAtb->normalized, vAtb->stride, BUFFER_OFFSET(vAtb->offset));
-
-				if (!(glState.vertexAttribsEnabled & attribBit))
+				uint32_t attribBit = 1u << attribIndex;
+				if (attribBits & attribBit)
 				{
-					qglEnableVertexAttribArray(attribIndex);
-					glState.vertexAttribsEnabled |= attribBit;
+					vaoAttrib_t *vAtb = &tess.vao->attribs[attribIndex];
+					Com_Memcpy(tessMappedVertexPtr + vAtb->offset + (size_t)tessRingVertPos * vAtb->stride,
+						tess.attribPointers[attribIndex],
+						(size_t)tess.numVertexes * vAtb->stride);
+				}
+			}
+
+			Com_Memcpy(tessMappedIndexPtr + tessRingIdxPos, tess.indexes, (size_t)tess.numIndexes * sizeof(tess.indexes[0]));
+
+			diff = (attribBits & ATTR_BITS) ^ (glState.vertexAttribsEnabled & ATTR_BITS);
+			if (diff)
+			{
+				for (attribIndex = 0; attribIndex < ATTR_INDEX_COUNT; attribIndex++)
+				{
+					uint32_t attribBit = 1u << attribIndex;
+					if (diff & attribBit)
+					{
+						if (attribBits & attribBit)
+						{
+							qglEnableVertexAttribArray(attribIndex);
+							glState.vertexAttribsEnabled |= attribBit;
+						}
+						else
+						{
+							qglDisableVertexAttribArray(attribIndex);
+							glState.vertexAttribsEnabled &= ~attribBit;
+						}
+					}
+				}
+			}
+
+			tess.baseVertex = tessRingVertPos;
+			tess.firstIndex = tessRingIdxPos;
+			tessRingVertPos += tess.numVertexes;
+			tessRingIdxPos  += tess.numIndexes;
+			return;
+		}
+
+		{
+			size_t attribOffsets[ATTR_INDEX_COUNT];
+			size_t attribSizes[ATTR_INDEX_COUNT];
+			size_t totalVertBytes = 0;
+			size_t idxBytes = (size_t)tess.numIndexes * sizeof(tess.indexes[0]);
+			size_t idxBytesAligned = (idxBytes + 15u) & ~(size_t)15u;
+
+			for (attribIndex = 0; attribIndex < ATTR_INDEX_COUNT; attribIndex++)
+			{
+				uint32_t attribBit = 1u << attribIndex;
+				if (attribBits & attribBit)
+				{
+					vaoAttrib_t *vAtb = &tess.vao->attribs[attribIndex];
+					size_t sz = (size_t)tess.numVertexes * vAtb->stride;
+					attribOffsets[attribIndex] = totalVertBytes;
+					attribSizes[attribIndex] = sz;
+					totalVertBytes += (sz + 15u) & ~(size_t)15u;
+				}
+			}
+
+			// Orphan vertex buffer only when the 8 MB ring wraps around
+			if (tessVertexRingByteOffset + totalVertBytes > (size_t)tess.vao->vertexesSize)
+			{
+				qglBufferData(GL_ARRAY_BUFFER, tess.vao->vertexesSize, NULL, GL_STREAM_DRAW);
+				tessVertexRingByteOffset = 0;
+			}
+
+			// Single unsynchronized map avoids Mesa V3D per-draw BO stalls
+			if (qglMapBufferRange && qglUnmapBuffer && totalVertBytes > 0)
+			{
+				byte *dst = (byte *)qglMapBufferRange(GL_ARRAY_BUFFER, (GLintptr)tessVertexRingByteOffset, (GLsizeiptr)totalVertBytes,
+					GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+				if (dst)
+				{
+					for (attribIndex = 0; attribIndex < ATTR_INDEX_COUNT; attribIndex++)
+					{
+						if (attribBits & (1u << attribIndex))
+						{
+							Com_Memcpy(dst + attribOffsets[attribIndex], tess.attribPointers[attribIndex], attribSizes[attribIndex]);
+						}
+					}
+					qglUnmapBuffer(GL_ARRAY_BUFFER);
 				}
 			}
 			else
 			{
-				if ((glState.vertexAttribsEnabled & attribBit))
+				for (attribIndex = 0; attribIndex < ATTR_INDEX_COUNT; attribIndex++)
+				{
+					if (attribBits & (1u << attribIndex))
+					{
+						qglBufferSubData(GL_ARRAY_BUFFER, (GLintptr)(tessVertexRingByteOffset + attribOffsets[attribIndex]),
+							(GLsizeiptr)attribSizes[attribIndex], tess.attribPointers[attribIndex]);
+					}
+				}
+			}
+
+			for (attribIndex = 0; attribIndex < ATTR_INDEX_COUNT; attribIndex++)
+			{
+				uint32_t attribBit = 1u << attribIndex;
+				vaoAttrib_t *vAtb = &tess.vao->attribs[attribIndex];
+
+				if (attribBits & attribBit)
+				{
+					size_t sliceOffset = tessVertexRingByteOffset + attribOffsets[attribIndex];
+					qglVertexAttribPointer(attribIndex, vAtb->count, vAtb->type, vAtb->normalized, vAtb->stride, BUFFER_OFFSET(sliceOffset));
+
+					if (!(glState.vertexAttribsEnabled & attribBit))
+					{
+						qglEnableVertexAttribArray(attribIndex);
+						glState.vertexAttribsEnabled |= attribBit;
+					}
+				}
+				else if (glState.vertexAttribsEnabled & attribBit)
 				{
 					qglDisableVertexAttribArray(attribIndex);
 					glState.vertexAttribsEnabled &= ~attribBit;
 				}
 			}
+
+			// Orphan index buffer only when the 4 MB ring wraps around
+			if (tessIndexRingByteOffset + idxBytesAligned > (size_t)tess.vao->indexesSize)
+			{
+				qglBufferData(GL_ELEMENT_ARRAY_BUFFER, tess.vao->indexesSize, NULL, GL_STREAM_DRAW);
+				tessIndexRingByteOffset = 0;
+			}
+
+			if (qglMapBufferRange && qglUnmapBuffer)
+			{
+				void *idst = qglMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)tessIndexRingByteOffset, (GLsizeiptr)idxBytes,
+					GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+				if (idst)
+				{
+					Com_Memcpy(idst, tess.indexes, idxBytes);
+					qglUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
+				}
+			}
+			else
+			{
+				qglBufferSubData(GL_ELEMENT_ARRAY_BUFFER, (GLintptr)tessIndexRingByteOffset, (GLsizeiptr)idxBytes, tess.indexes);
+			}
+
+			tess.baseVertex = 0;
+			tess.firstIndex = (int)(tessIndexRingByteOffset / sizeof(tess.indexes[0]));
+			tessVertexRingByteOffset += totalVertBytes;
+			tessIndexRingByteOffset += idxBytesAligned;
 		}
-
-		// orphan old index buffer so we don't stall on it
-		qglBufferData(GL_ELEMENT_ARRAY_BUFFER, tess.vao->indexesSize, NULL, GL_DYNAMIC_DRAW);
-
-		qglBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, tess.numIndexes * sizeof(tess.indexes[0]), tess.indexes);
 	}
 }
 
@@ -801,14 +1072,40 @@ void VaoCache_Commit(void)
 		if (vcq.vertexCommitSize)
 		{
 			qglBindBuffer(GL_ARRAY_BUFFER, vc.vao->vertexesVBO);
-			qglBufferSubData(GL_ARRAY_BUFFER, vc.vertexOffset, vcq.vertexCommitSize, vcq.vertexes);
+			if (qglMapBufferRange && qglUnmapBuffer)
+			{
+				void *dst = qglMapBufferRange(GL_ARRAY_BUFFER, vc.vertexOffset, vcq.vertexCommitSize,
+					GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+				if (dst)
+				{
+					Com_Memcpy(dst, vcq.vertexes, vcq.vertexCommitSize);
+					qglUnmapBuffer(GL_ARRAY_BUFFER);
+				}
+			}
+			else
+			{
+				qglBufferSubData(GL_ARRAY_BUFFER, vc.vertexOffset, vcq.vertexCommitSize, vcq.vertexes);
+			}
 			vc.vertexOffset += vcq.vertexCommitSize;
 		}
 
 		if (vcq.indexCommitSize)
 		{
 			qglBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vc.vao->indexesIBO);
-			qglBufferSubData(GL_ELEMENT_ARRAY_BUFFER, vc.indexOffset, vcq.indexCommitSize, vcq.indexes);
+			if (qglMapBufferRange && qglUnmapBuffer)
+			{
+				void *idst = qglMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, vc.indexOffset, vcq.indexCommitSize,
+					GL_MAP_WRITE_BIT | GL_MAP_UNSYNCHRONIZED_BIT);
+				if (idst)
+				{
+					Com_Memcpy(idst, vcq.indexes, vcq.indexCommitSize);
+					qglUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
+				}
+			}
+			else
+			{
+				qglBufferSubData(GL_ELEMENT_ARRAY_BUFFER, vc.indexOffset, vcq.indexCommitSize, vcq.indexes);
+			}
 			vc.indexOffset += vcq.indexCommitSize;
 		}
 	}

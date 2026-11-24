@@ -3195,6 +3195,16 @@ void CL_InitRef( void ) {
 	char			dllName[MAX_OSPATH];
 #endif
 
+	// Ensure Remaster gameplay/view cvars exist immediately for the UI menu before a map loads
+	Cvar_Get("cg_marks_lifetime", "45", CVAR_ARCHIVE);
+	Cvar_Get("cg_modernGunplay", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_extendedFarplane", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_farplaneScale", "1.35", CVAR_ARCHIVE);
+	Cvar_Get("g_aiFairness", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_foliageWind", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_emissiveGlow", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_mapAtmosphere", "1", CVAR_ARCHIVE);
+
 	Com_Printf( "----- Initializing Renderer ----\n" );
 
 #define RENDERER_ARCH_DLL_EXT DLL_SUFFIX DLL_EXT

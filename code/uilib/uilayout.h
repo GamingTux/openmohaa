@@ -46,5 +46,7 @@ public:
     UILayout(const char *filename);
 
     void Load(const char *filename, bool bFullLoad);
+    void LoadBuffer(const char *buffer, size_t length, const char *name);
+    void AppendToContainer(UIWidgetContainer *container, const char *buffer, size_t length, const char *name);
     int  ForceLoad(void);
 };

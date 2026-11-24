@@ -670,7 +670,7 @@ static void R_RecursiveWorldNode( mnode_t *node, int planeBits, int dlightBits )
 			int i;
 
 			for (i = 0; i < node->numStaticModels; i++) {
-				tr.world->visStaticModels[node->firstStaticModel + i]->visCount = tr.visCount;
+				tr.world->visStaticModels[node->firstStaticModel + i]->visCount = tr.viewCount;
 			}
 		}
 	}
@@ -898,7 +898,7 @@ void R_AddWorldSurfaces (void) {
 		tr.refdef.num_dlights = 32;
 	}
 	R_TransformDlights(tr.refdef.num_dlights, tr.refdef.dlights, &tr.viewParms.world);
-	R_RecursiveWorldNode(tr.world->nodes, tr.viewParms.fog.extrafrustums ? 31 : 15, (1 << tr.refdef.num_dlights) - 1);
+	R_RecursiveWorldNode(tr.world->nodes, tr.viewParms.fog.extrafrustums ? 31 : 15, (int)((1ULL << tr.refdef.num_dlights) - 1));
 
 	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky) {
 		R_AddTerrainSurfaces();

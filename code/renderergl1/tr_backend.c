@@ -20,6 +20,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 ===========================================================================
 */
 #include "tr_local.h"
+#include "../renderercommon/tr_threadpool.h"
 
 backEndData_t	*backEndData;
 backEndState_t	backEnd;
@@ -686,6 +687,14 @@ void RB_BeginDrawingView (void) {
 	}
 }
 
+static void RB_ParallelSetupEntitySpheres( int start, int end, void *ctx ) {
+	trRefEntity_t **sphereEntities = (trRefEntity_t **)ctx;
+	int idx;
+	for ( idx = start; idx < end; idx++ ) {
+		RB_Sphere_SetupEntityFor( sphereEntities[idx], &backEnd.spheres[idx] );
+	}
+}
+
 /*
 ==================
 RB_RenderDrawSurfList
@@ -720,6 +729,35 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
 	backEnd.numSpheresUsed = 0;
+
+	if ( !( tr.refdef.rdflags & RDF_HUD ) && !r_fastentlight->integer
+		&& r_drawspherelights->integer && !r_light_lines->integer && !r_light_sun_line->integer ) {
+		trRefEntity_t *sphereEntities[MAX_SPHERE_LIGHTS];
+		unsigned int prevSort = ~0U;
+		for ( i = 0; i < numDrawSurfs && backEnd.numSpheresUsed < MAX_SPHERE_LIGHTS; i++ ) {
+			if ( drawSurfs[i].sort == prevSort || *drawSurfs[i].surface == SF_SPRITE ) {
+				continue;
+			}
+			prevSort = drawSurfs[i].sort;
+			R_DecomposeSort( prevSort, &entityNum, &shader, &dlightMap, &bStaticModel );
+			if ( !bStaticModel && entityNum != ENTITYNUM_WORLD ) {
+				trRefEntity_t *ent = &backEnd.refdef.entities[entityNum];
+				if ( ent->e.tiki && !ent->sphereCalculated && shader->needsLSpherical && !shader->needsLGrid ) {
+					int idx = backEnd.numSpheresUsed++;
+					ent->lightingSphere = idx;
+					ent->sphereCalculated = 1;
+					backEnd.spheres[idx].TessFunction = NULL;
+					sphereEntities[idx] = ent;
+				}
+			}
+		}
+		if ( backEnd.numSpheresUsed > 0 ) {
+			R_ParallelFor( backEnd.numSpheresUsed, 1, RB_ParallelSetupEntitySpheres, sphereEntities );
+			for ( i = 0; i < backEnd.numSpheresUsed; i++ ) {
+				backEnd.pc.c_characterlights += backEnd.spheres[i].numRealLights;
+			}
+		}
+	}
 
 	for (i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++) {
 		if ( drawSurf->sort == (unsigned)oldSort && *drawSurf->surface != SF_SPRITE ) {
@@ -901,11 +939,6 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 #if 0
 	RB_DrawSun();
 #endif
-	// darken down any stencil shadows
-	RB_ShadowFinish();		
-
-	// add light flares on lights that aren't obscured
-	RB_RenderFlares();
 }
 
 /*
@@ -1276,11 +1309,17 @@ const void	*RB_DrawBuffer( const void *data ) {
 
 	qglDrawBuffer( cmd->buffer );
 
-	// clear screen for debugging
+	// Ensure full-surface clear at frame start so TBDR GPUs (e.g. Raspberry Pi 5 VideoCore VII)
+	// can skip loading the previous frame's color/depth tiles from RAM.
+	GL_State( GLS_DEFAULT );
+	qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+
 	if ( r_clear->integer ) {
 		qglClearColor( 1, 0, 0.5, 1 );
-		qglClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
+	} else {
+		qglClearColor( 0, 0, 0, 1 );
 	}
+	qglClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | (glConfig.stencilBits ? GL_STENCIL_BUFFER_BIT : 0) );
 
 	return (const void *)(cmd + 1);
 }

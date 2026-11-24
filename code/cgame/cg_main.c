@@ -117,6 +117,10 @@ cvar_t *ui_timemessage;
 //
 cvar_t *cg_fov;
 cvar_t *cg_cheats;
+cvar_t *cg_marks_lifetime;
+cvar_t *cg_modernGunplay;
+cvar_t *cg_extendedFarplane;
+cvar_t *cg_farplaneScale;
 
 /*
 =================
@@ -130,7 +134,11 @@ void CG_RegisterCvars(void)
     cgi.Cvar_Get("g_subtitle", "0", CVAR_ARCHIVE);
     cg_viewsize                   = cgi.Cvar_Get("viewsize", "100", CVAR_ARCHIVE);
     cg_addMarks                   = cgi.Cvar_Get("cg_marks_add", "1", CVAR_ARCHIVE);
-    cg_maxMarks                   = cgi.Cvar_Get("cg_marks_max", "256", CVAR_ARCHIVE | CVAR_LATCH);
+    cg_maxMarks                   = cgi.Cvar_Get("cg_marks_max", "768", CVAR_ARCHIVE | CVAR_LATCH);
+    cg_marks_lifetime             = cgi.Cvar_Get("cg_marks_lifetime", "45", CVAR_ARCHIVE);
+    cg_modernGunplay              = cgi.Cvar_Get("cg_modernGunplay", "1", CVAR_ARCHIVE);
+    cg_extendedFarplane           = cgi.Cvar_Get("cg_extendedFarplane", "1", CVAR_ARCHIVE);
+    cg_farplaneScale              = cgi.Cvar_Get("cg_farplaneScale", "1.35", CVAR_ARCHIVE);
     cg_animSpeed                  = cgi.Cvar_Get("cg_animspeed", "1", CVAR_CHEAT);
     cg_debugAnim                  = cgi.Cvar_Get("cg_debuganim", "0", CVAR_CHEAT);
     cg_debugAnimWatch             = cgi.Cvar_Get("cg_debuganimwatch", "0", CVAR_CHEAT);

@@ -40,6 +40,8 @@ extern const char *fallbackShader_generic_vp;
 extern const char *fallbackShader_generic_fp;
 extern const char *fallbackShader_lightall_vp;
 extern const char *fallbackShader_lightall_fp;
+extern const char *fallbackShader_modellight_vp;
+extern const char *fallbackShader_modellight_fp;
 extern const char *fallbackShader_pshadow_vp;
 extern const char *fallbackShader_pshadow_fp;
 extern const char *fallbackShader_shadowfill_vp;
@@ -54,6 +56,10 @@ extern const char *fallbackShader_tonemap_vp;
 extern const char *fallbackShader_tonemap_fp;
 extern const char* fallbackShader_greyscale_vp;
 extern const char* fallbackShader_greyscale_fp;
+extern const char *fallbackShader_water_vp;
+extern const char *fallbackShader_water_fp;
+extern const char *fallbackShader_postfx_vp;
+extern const char *fallbackShader_postfx_fp;
 
 typedef struct uniformInfo_s
 {
@@ -158,7 +164,63 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_AlphaTest", GLSL_INT },
 
 	{ "u_BoneMatrix", GLSL_MAT16_BONEMATRIX },
-	{ "u_Greyscale", GLSL_FLOAT }
+	{ "u_Greyscale", GLSL_FLOAT },
+
+	{ "u_FarplaneFogColor", GLSL_VEC4 },
+	{ "u_FarplaneFogParams", GLSL_VEC2 },
+
+	{ "u_TCGen1",        GLSL_INT },
+	{ "u_TCGen1Vector0", GLSL_VEC3 },
+	{ "u_TCGen1Vector1", GLSL_VEC3 },
+	{ "u_Bundle1TexMatrix0", GLSL_VEC4 },
+	{ "u_Bundle1TexMatrix1", GLSL_VEC4 },
+	{ "u_Bundle1TexMatrix2", GLSL_VEC4 },
+	{ "u_Bundle1TexMatrix3", GLSL_VEC4 },
+	{ "u_Bundle1TexMatrix4", GLSL_VEC4 },
+	{ "u_Bundle1TexMatrix5", GLSL_VEC4 },
+	{ "u_Bundle1TexMatrix6", GLSL_VEC4 },
+	{ "u_Bundle1TexMatrix7", GLSL_VEC4 },
+	{ "u_MultitextureEnv",   GLSL_INT },
+
+	{ "u_ModelLightCount",   GLSL_INT },
+	{ "u_ModelLightPos0",    GLSL_VEC4 },
+	{ "u_ModelLightPos1",    GLSL_VEC4 },
+	{ "u_ModelLightPos2",    GLSL_VEC4 },
+	{ "u_ModelLightPos3",    GLSL_VEC4 },
+	{ "u_ModelLightColor0",  GLSL_VEC4 },
+	{ "u_ModelLightColor1",  GLSL_VEC4 },
+	{ "u_ModelLightColor2",  GLSL_VEC4 },
+	{ "u_ModelLightColor3",  GLSL_VEC4 },
+	{ "u_ModelLocalUp",      GLSL_VEC3 },
+	{ "u_ModelScreenRight",  GLSL_VEC3 },
+	{ "u_ModelScreenUp",     GLSL_VEC3 },
+	{ "u_ModelMaterial",     GLSL_VEC4 },
+	{ "u_ModelMaterial2",    GLSL_VEC4 },
+
+	{ "u_WaterSunDir",       GLSL_VEC4 },
+	{ "u_WaterSunColor",     GLSL_VEC4 },
+	{ "u_WaterSkyColor",     GLSL_VEC4 },
+	{ "u_WaterHorizonColor", GLSL_VEC4 },
+	{ "u_WaterParams",       GLSL_VEC4 },
+
+	{ "u_WorldReliefRight",  GLSL_VEC3 },
+	{ "u_WorldReliefUp",     GLSL_VEC3 },
+	{ "u_WorldReliefLight",  GLSL_VEC4 },
+	{ "u_WorldReliefParams", GLSL_VEC4 },
+
+	{ "u_SoftParticleParams", GLSL_VEC4 },
+	{ "u_SoftParticleZ",      GLSL_VEC4 },
+	{ "u_SoftParticleMask",   GLSL_VEC2 },
+
+	{ "u_SunShadowMap",       GLSL_INT },
+	{ "u_SunShadowMvp",       GLSL_MAT16 },
+	{ "u_SunShadowDir",       GLSL_VEC4 },
+	{ "u_SunShadowParams",    GLSL_VEC4 },
+
+	{ "u_PostFxBounds",       GLSL_VEC4 },
+	{ "u_PostFxSharpen",      GLSL_VEC2 },
+	{ "u_ColorGrade",         GLSL_VEC4 },
+	{ "u_WindParams",         GLSL_VEC4 }
 };
 
 typedef enum
@@ -256,10 +318,16 @@ static void GLSL_GetShaderHeader( GLenum shaderType, const GLchar *extra, char *
 			Q_strcat(dest, size, "#version 300 es\n");
 		else if (glRefConfig.glslMajorVersion > 1 || (glRefConfig.glslMajorVersion == 1 && glRefConfig.glslMinorVersion >= 50))
 			Q_strcat(dest, size, "#version 150\n");
+		else if (glRefConfig.glslMajorVersion == 1 && glRefConfig.glslMinorVersion >= 40)
+			Q_strcat(dest, size, "#version 140\n");
 		else
 			Q_strcat(dest, size, "#version 130\n");
 
 		// `extra' may contain #extension which must be directly after #version
+		if (shaderType == GL_FRAGMENT_SHADER && extra && strstr(extra, "POSTFX_ONCHIP_FILMIC"))
+		{
+			Q_strcat(dest, size, "#extension GL_EXT_shader_framebuffer_fetch : require\n");
+		}
 		if (extra)
 		{
 			Q_strcat(dest, size, extra);
@@ -280,7 +348,10 @@ static void GLSL_GetShaderHeader( GLenum shaderType, const GLchar *extra, char *
 		{
 			Q_strcat(dest, size, "#define varying in\n");
 
-			Q_strcat(dest, size, "out vec4 out_Color;\n");
+			if (extra && strstr(extra, "POSTFX_ONCHIP_FILMIC"))
+				Q_strcat(dest, size, "inout vec4 out_Color;\n");
+			else
+				Q_strcat(dest, size, "out vec4 out_Color;\n");
 			Q_strcat(dest, size, "#define gl_FragColor out_Color\n");
 			Q_strcat(dest, size, "#define texture2D texture\n");
 			Q_strcat(dest, size, "#define textureCubeLod textureLod\n");
@@ -357,12 +428,16 @@ static void GLSL_GetShaderHeader( GLenum shaderType, const GLchar *extra, char *
 						"#define TCGEN_LIGHTMAP %i\n"
 						"#define TCGEN_TEXTURE %i\n"
 						"#define TCGEN_ENVIRONMENT_MAPPED %i\n"
+						"#define TCGEN_ENVIRONMENT_MAPPED2 %i\n"
+						"#define TCGEN_SUN_REFLECTION %i\n"
 						"#define TCGEN_FOG %i\n"
 						"#define TCGEN_VECTOR %i\n"
 						"#endif\n",
 						TCGEN_LIGHTMAP,
 						TCGEN_TEXTURE,
 						TCGEN_ENVIRONMENT_MAPPED,
+						TCGEN_ENVIRONMENT_MAPPED2,
+						TCGEN_SUN_REFLECTION,
 						TCGEN_FOG,
 						TCGEN_VECTOR));
 
@@ -409,6 +484,8 @@ static void GLSL_GetShaderHeader( GLenum shaderType, const GLchar *extra, char *
 	Q_strcat(dest, size, "#line 0\n");
 }
 
+static qboolean s_glslAllowOptionalFail = qfalse;
+
 static int GLSL_CompileGPUShader(GLuint program, GLuint *prevShader, const GLchar *buffer, int size, GLenum shaderType)
 {
 	GLint           compiled;
@@ -425,6 +502,11 @@ static int GLSL_CompileGPUShader(GLuint program, GLuint *prevShader, const GLcha
 	qglGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
 	if(!compiled)
 	{
+		if (s_glslAllowOptionalFail)
+		{
+			qglDeleteShader(shader);
+			return 0;
+		}
 		GLSL_PrintLog(shader, GLSL_PRINTLOG_SHADER_SOURCE, qfalse);
 		GLSL_PrintLog(shader, GLSL_PRINTLOG_SHADER_INFO, qfalse);
 		ri.Error(ERR_DROP, "Couldn't compile shader");
@@ -508,7 +590,7 @@ static int GLSL_LoadGPUShaderText(const char *name, const char *fallback,
 	return result;
 }
 
-static void GLSL_LinkProgram(GLuint program)
+static int GLSL_LinkProgram(GLuint program)
 {
 	GLint           linked;
 
@@ -517,9 +599,16 @@ static void GLSL_LinkProgram(GLuint program)
 	qglGetProgramiv(program, GL_LINK_STATUS, &linked);
 	if(!linked)
 	{
+		if (s_glslAllowOptionalFail)
+		{
+			return 0;
+		}
 		GLSL_PrintLog(program, GLSL_PRINTLOG_PROGRAM_INFO, qfalse);
 		ri.Error(ERR_DROP, "shaders failed to link");
+		return 0;
 	}
+
+	return 1;
 }
 
 static void GLSL_ShowProgramUniforms(GLuint program)
@@ -616,7 +705,12 @@ static int GLSL_InitGPUShader2(shaderProgram_t * program, const char *name, int 
 	if(attribs & ATTR_TANGENT2)
 		qglBindAttribLocation(program->program, ATTR_INDEX_TANGENT2, "attr_Tangent2");
 
-	GLSL_LinkProgram(program->program);
+	if (!GLSL_LinkProgram(program->program))
+	{
+		qglDeleteProgram(program->program);
+		program->program = 0;
+		return 0;
+	}
 
 	return 1;
 }
@@ -988,6 +1082,14 @@ void GLSL_InitGPUShaders(void)
 		if ((i & GENERICDEF_USE_BONE_ANIMATION) && !glRefConfig.glslMaxAnimatedBones)
 			continue;
 
+		if (i & GENERICDEF_USE_MULTITEXTURE)
+		{
+			if (i & (GENERICDEF_USE_VERTEX_ANIMATION | GENERICDEF_USE_BONE_ANIMATION))
+				continue;
+			if (!(i & GENERICDEF_USE_TCGEN_AND_TCMOD))
+				continue;
+		}
+
 		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_LIGHTCOORD | ATTR_NORMAL | ATTR_COLOR;
 		extradefines[0] = '\0';
 
@@ -1019,6 +1121,12 @@ void GLSL_InitGPUShaders(void)
 
 		if (i & GENERICDEF_USE_RGBAGEN)
 			Q_strcat(extradefines, 1024, "#define USE_RGBAGEN\n");
+
+		if (i & GENERICDEF_USE_ALPHATEST)
+			Q_strcat(extradefines, 1024, "#define USE_ALPHATEST\n");
+
+		if (i & GENERICDEF_USE_MULTITEXTURE)
+			Q_strcat(extradefines, 1024, "#define USE_MULTITEXTURE\n");
 
 		if (!GLSL_InitGPUShader(&tr.genericShader[i], "generic", attribs, qtrue, extradefines, qtrue, fallbackShader_generic_vp, fallbackShader_generic_fp))
 		{
@@ -1093,8 +1201,13 @@ void GLSL_InitGPUShaders(void)
 
 	for (i = 0; i < DLIGHTDEF_COUNT; i++)
 	{
-		attribs = ATTR_POSITION | ATTR_NORMAL | ATTR_TEXCOORD;
+		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_NORMAL;
 		extradefines[0] = '\0';
+
+		if (qglesMajorVersion && qglesMajorVersion < 3 && glRefConfig.standardDerivatives)
+		{
+			Q_strcat(extradefines, 1024, "#extension GL_OES_standard_derivatives : enable\n");
+		}
 
 		if (i & DLIGHTDEF_USE_DEFORM_VERTEXES)
 		{
@@ -1115,17 +1228,58 @@ void GLSL_InitGPUShaders(void)
 		numEtcShaders++;
 	}
 
+	for (i = 0; i < SOFTPARTDEF_COUNT; i++)
+	{
+		if ((i & SOFTPARTDEF_USE_MULTITEXTURE) && !(i & SOFTPARTDEF_USE_TCGEN_AND_TCMOD))
+			continue;
+
+		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_LIGHTCOORD | ATTR_NORMAL | ATTR_COLOR;
+		extradefines[0] = '\0';
+
+		Q_strcat(extradefines, 1024, "#define USE_SOFT_PARTICLES\n");
+
+		if (i & SOFTPARTDEF_USE_TCGEN_AND_TCMOD)
+		{
+			Q_strcat(extradefines, 1024, "#define USE_TCGEN\n");
+			Q_strcat(extradefines, 1024, "#define USE_TCMOD\n");
+		}
+
+		if (i & SOFTPARTDEF_USE_MULTITEXTURE)
+			Q_strcat(extradefines, 1024, "#define USE_MULTITEXTURE\n");
+
+		if (i & SOFTPARTDEF_USE_FOG)
+			Q_strcat(extradefines, 1024, "#define USE_FOG\n");
+
+		if (!GLSL_InitGPUShader(&tr.softParticleShader[i], "generic", attribs, qtrue, extradefines, qtrue, fallbackShader_generic_vp, fallbackShader_generic_fp))
+		{
+			ri.Error(ERR_FATAL, "Could not load softParticle shader!");
+		}
+
+		GLSL_InitUniforms(&tr.softParticleShader[i]);
+		GLSL_SetUniformInt(&tr.softParticleShader[i], UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
+		GLSL_SetUniformInt(&tr.softParticleShader[i], UNIFORM_LIGHTMAP, TB_LIGHTMAP);
+		GLSL_SetUniformInt(&tr.softParticleShader[i], UNIFORM_SCREENDEPTHMAP, TB_SHADOWMAP);
+		GLSL_FinishGPUShader(&tr.softParticleShader[i]);
+
+		numEtcShaders++;
+	}
+
 
 	for (i = 0; i < LIGHTDEF_COUNT; i++)
 	{
 		int lightType = i & LIGHTDEF_LIGHTTYPE_MASK;
 		qboolean fastLight = !(r_normalMapping->integer || r_specularMapping->integer);
+		qboolean canSunShadow = glRefConfig.framebufferObject
+			&& (glRefConfig.glslMajorVersion > 1 || (glRefConfig.glslMajorVersion == 1 && glRefConfig.glslMinorVersion >= 10) || glRefConfig.shadowSamplers);
 
 		// skip impossible combos
 		if ((i & LIGHTDEF_USE_PARALLAXMAP) && !r_parallaxMapping->integer)
 			continue;
 
-		if ((i & LIGHTDEF_USE_SHADOWMAP) && (!lightType || !r_sunlightMode->integer))
+		if ((i & LIGHTDEF_USE_SHADOWMAP) && (!lightType || !r_sunlightMode->integer || (!r_sunShadows->integer && !r_forceSun->integer)))
+			continue;
+
+		if ((i & LIGHTDEF_USE_PISUNSHADOW) && (lightType != LIGHTDEF_USE_LIGHTMAP || !fastLight || (i & LIGHTDEF_USE_SHADOWMAP) || !canSunShadow))
 			continue;
 
 		if ((i & LIGHTDEF_ENTITY_VERTEX_ANIMATION) && (i & LIGHTDEF_ENTITY_BONE_ANIMATION))
@@ -1137,6 +1291,21 @@ void GLSL_InitGPUShaders(void)
 		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_COLOR | ATTR_NORMAL;
 
 		extradefines[0] = '\0';
+
+		if (lightType == LIGHTDEF_USE_LIGHTMAP && fastLight)
+		{
+			qboolean wantRelief = (!qglesMajorVersion || qglesMajorVersion >= 3 || glRefConfig.standardDerivatives);
+			qboolean wantSunShadow = !!(i & LIGHTDEF_USE_PISUNSHADOW);
+
+			if (wantRelief && qglesMajorVersion && qglesMajorVersion < 3)
+				Q_strcat(extradefines, 1024, "#extension GL_OES_standard_derivatives : enable\n");
+			if (wantSunShadow && qglesMajorVersion && qglesMajorVersion < 3 && glRefConfig.shadowSamplers)
+				Q_strcat(extradefines, 1024, "#extension GL_EXT_shadow_samplers : enable\n");
+			if (wantRelief)
+				Q_strcat(extradefines, 1024, "#define USE_WORLD_RELIEF\n");
+			if (wantSunShadow)
+				Q_strcat(extradefines, 1024, "#define USE_SUN_SHADOW\n");
+		}
 
 		if (r_dlightMode->integer >= 2)
 			Q_strcat(extradefines, 1024, "#define USE_SHADOWMAP\n");
@@ -1237,6 +1406,9 @@ void GLSL_InitGPUShaders(void)
 			Q_strcat(extradefines, 1024, "#define USE_TCMOD\n");
 		}
 
+		if (i & LIGHTDEF_USE_ALPHATEST)
+			Q_strcat(extradefines, 1024, "#define USE_ALPHATEST\n");
+
 		if (i & LIGHTDEF_ENTITY_VERTEX_ANIMATION)
 		{
 			Q_strcat(extradefines, 1024, "#define USE_MODELMATRIX\n");
@@ -1272,6 +1444,7 @@ void GLSL_InitGPUShaders(void)
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_DELUXEMAP,   TB_DELUXEMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SPECULARMAP, TB_SPECULARMAP);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SHADOWMAP,   TB_SHADOWMAP);
+		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_SUNSHADOWMAP, TB_SHADOWMAP2);
 		GLSL_SetUniformInt(&tr.lightallShader[i], UNIFORM_CUBEMAP,     TB_CUBEMAP);
 
 		GLSL_FinishGPUShader(&tr.lightallShader[i]);
@@ -1313,6 +1486,94 @@ void GLSL_InitGPUShaders(void)
 
 		GLSL_InitUniforms(&tr.shadowmapShader[i]);
 		GLSL_FinishGPUShader(&tr.shadowmapShader[i]);
+
+		numEtcShaders++;
+	}
+
+	for (i = 0; i < MODELDEF_COUNT; i++)
+	{
+		qboolean canSunShadow = glRefConfig.framebufferObject
+			&& (glRefConfig.glslMajorVersion > 1 || (glRefConfig.glslMajorVersion == 1 && glRefConfig.glslMinorVersion >= 10) || glRefConfig.shadowSamplers);
+		qboolean wantSunShadow = !!(i & MODELDEF_USE_SUN_SHADOW);
+		qboolean wantDerivatives = (i & MODELDEF_USE_SPECULAR)
+			&& (!qglesMajorVersion || qglesMajorVersion >= 3 || glRefConfig.standardDerivatives);
+
+		if (wantSunShadow && !canSunShadow)
+			continue;
+
+		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_LIGHTCOORD | ATTR_NORMAL | ATTR_COLOR;
+		extradefines[0] = '\0';
+
+		if (wantDerivatives && qglesMajorVersion && qglesMajorVersion < 3)
+			Q_strcat(extradefines, 1024, "#extension GL_OES_standard_derivatives : enable\n");
+
+		if (wantSunShadow && qglesMajorVersion && qglesMajorVersion < 3 && glRefConfig.shadowSamplers)
+			Q_strcat(extradefines, 1024, "#extension GL_EXT_shadow_samplers : enable\n");
+
+		if (i & MODELDEF_USE_TCGEN_AND_TCMOD)
+		{
+			Q_strcat(extradefines, 1024, "#define USE_TCGEN\n");
+			Q_strcat(extradefines, 1024, "#define USE_TCMOD\n");
+		}
+
+		if (i & MODELDEF_USE_ALPHATEST)
+			Q_strcat(extradefines, 1024, "#define USE_ALPHATEST\n");
+
+		if (i & MODELDEF_USE_SPECULAR)
+		{
+			Q_strcat(extradefines, 1024, "#define USE_SPECULAR\n");
+			if (wantDerivatives)
+				Q_strcat(extradefines, 1024, "#define USE_DERIVATIVES\n");
+		}
+
+		if (wantSunShadow)
+			Q_strcat(extradefines, 1024, "#define USE_SUN_SHADOW\n");
+
+		if (!GLSL_InitGPUShader(&tr.modelLightShader[i], "modellight", attribs, qtrue, extradefines, qtrue, fallbackShader_modellight_vp, fallbackShader_modellight_fp))
+		{
+			ri.Error(ERR_FATAL, "Could not load modellight shader!");
+		}
+
+		GLSL_InitUniforms(&tr.modelLightShader[i]);
+		GLSL_SetUniformInt(&tr.modelLightShader[i], UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
+		if (wantSunShadow)
+			GLSL_SetUniformInt(&tr.modelLightShader[i], UNIFORM_SUNSHADOWMAP, TB_SHADOWMAP2);
+		GLSL_FinishGPUShader(&tr.modelLightShader[i]);
+
+		numEtcShaders++;
+	}
+
+	for (i = 0; i < WATERDEF_COUNT; i++)
+	{
+		if ((i & WATERDEF_USE_MULTITEXTURE) && (i & WATERDEF_USE_LIGHTMAP))
+		{
+			continue;
+		}
+
+		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_LIGHTCOORD | ATTR_NORMAL | ATTR_COLOR;
+		extradefines[0] = '\0';
+
+		if (i & WATERDEF_USE_DEFORM_VERTEXES)
+			Q_strcat(extradefines, 1024, "#define USE_DEFORM_VERTEXES\n");
+
+		if (i & WATERDEF_USE_MULTITEXTURE)
+			Q_strcat(extradefines, 1024, "#define USE_MULTITEXTURE\n");
+
+		if (i & WATERDEF_USE_LIGHTMAP)
+			Q_strcat(extradefines, 1024, "#define USE_LIGHTMAP\n");
+
+		if (!GLSL_InitGPUShader(&tr.waterShader[i], "water", attribs, qtrue, extradefines, qtrue, fallbackShader_water_vp, fallbackShader_water_fp))
+		{
+			ri.Error(ERR_FATAL, "Could not load water shader!");
+		}
+
+		GLSL_InitUniforms(&tr.waterShader[i]);
+		GLSL_SetUniformInt(&tr.waterShader[i], UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
+		if (i & (WATERDEF_USE_MULTITEXTURE | WATERDEF_USE_LIGHTMAP))
+		{
+			GLSL_SetUniformInt(&tr.waterShader[i], UNIFORM_LIGHTMAP, TB_LIGHTMAP);
+		}
+		GLSL_FinishGPUShader(&tr.waterShader[i]);
 
 		numEtcShaders++;
 	}
@@ -1386,6 +1647,56 @@ void GLSL_InitGPUShaders(void)
 	GLSL_FinishGPUShader(&tr.tonemapShader);
 
 	numEtcShaders++;
+
+	{
+		static const char *postFxDefines[4] = {
+			"#define POSTFX_BRIGHT\n",
+			"#define POSTFX_BLUR\n",
+			"#define POSTFX_COMBINE\n",
+			"#define POSTFX_COMBINE_NOBLOOM\n"
+		};
+
+		for (i = 0; i < 4; i++)
+		{
+			attribs = ATTR_POSITION | ATTR_TEXCOORD;
+
+			if (!GLSL_InitGPUShader(&tr.postFxShader[i], "postfx", attribs, qtrue, postFxDefines[i], qtrue, fallbackShader_postfx_vp, fallbackShader_postfx_fp))
+			{
+				ri.Error(ERR_FATAL, "Could not load postfx shader!");
+			}
+
+			GLSL_InitUniforms(&tr.postFxShader[i]);
+			GLSL_SetUniformInt(&tr.postFxShader[i], UNIFORM_TEXTUREMAP, TB_COLORMAP);
+			if (i == 2)
+			{
+				GLSL_SetUniformInt(&tr.postFxShader[i], UNIFORM_LEVELSMAP, TB_LEVELSMAP);
+			}
+			GLSL_FinishGPUShader(&tr.postFxShader[i]);
+
+			numEtcShaders++;
+		}
+
+		if (glRefConfig.framebufferFetch
+			&& (glRefConfig.glslMajorVersion > 1 || (glRefConfig.glslMajorVersion == 1 && glRefConfig.glslMinorVersion >= 30)))
+		{
+			qboolean ok;
+			attribs = ATTR_POSITION | ATTR_TEXCOORD;
+			s_glslAllowOptionalFail = qtrue;
+			ok = GLSL_InitGPUShader(&tr.postFxShader[4], "postfx", attribs, qtrue, "#define POSTFX_ONCHIP_FILMIC\n", qtrue, fallbackShader_postfx_vp, fallbackShader_postfx_fp);
+			s_glslAllowOptionalFail = qfalse;
+			if (ok)
+			{
+				GLSL_InitUniforms(&tr.postFxShader[4]);
+				GLSL_FinishGPUShader(&tr.postFxShader[4]);
+				numEtcShaders++;
+			}
+			else
+			{
+				Com_Memset(&tr.postFxShader[4], 0, sizeof(tr.postFxShader[4]));
+				glRefConfig.framebufferFetch = qfalse;
+			}
+		}
+	}
 
 
 	for (i = 0; i < 2; i++)
@@ -1581,10 +1892,22 @@ void GLSL_ShutdownGPUShaders(void)
 	for ( i = 0; i < SHADOWMAPDEF_COUNT; i++)
 		GLSL_DeleteGPUShader(&tr.shadowmapShader[i]);
 
+	for ( i = 0; i < MODELDEF_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.modelLightShader[i]);
+
+	for ( i = 0; i < WATERDEF_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.waterShader[i]);
+
+	for ( i = 0; i < SOFTPARTDEF_COUNT; i++)
+		GLSL_DeleteGPUShader(&tr.softParticleShader[i]);
+
 	GLSL_DeleteGPUShader(&tr.pshadowShader);
 	GLSL_DeleteGPUShader(&tr.down4xShader);
 	GLSL_DeleteGPUShader(&tr.bokehShader);
 	GLSL_DeleteGPUShader(&tr.tonemapShader);
+
+	for ( i = 0; i < 5; i++)
+		GLSL_DeleteGPUShader(&tr.postFxShader[i]);
 
 	for ( i = 0; i < 2; i++)
 		GLSL_DeleteGPUShader(&tr.calclevels4xShader[i]);
@@ -1664,6 +1987,17 @@ shaderProgram_t *GLSL_GetGenericShaderProgram(int stage)
 	if (pStage->bundle[0].numTexMods)
 	{
 		shaderAttribs |= GENERICDEF_USE_TCGEN_AND_TCMOD;
+	}
+
+	if (pStage->stateBits & GLS_ATEST_BITS)
+	{
+		shaderAttribs |= GENERICDEF_USE_ALPHATEST;
+	}
+
+	if (pStage->bundle[1].image[0] != 0)
+	{
+		shaderAttribs |= GENERICDEF_USE_MULTITEXTURE | GENERICDEF_USE_TCGEN_AND_TCMOD;
+		shaderAttribs &= ~(GENERICDEF_USE_VERTEX_ANIMATION | GENERICDEF_USE_BONE_ANIMATION);
 	}
 
 	return &tr.genericShader[shaderAttribs];

@@ -144,6 +144,12 @@ obfuscation_t *CM_SetupObfuscationMapping()
                 }
             }
 
+            if (j == numObfuscations && numObfuscations >= MAX_OBFUSCATIONS - 1) {
+                Com_Printf("WARNING: exceeded MAX_OBFUSCATIONS (%i)\n", numObfuscations);
+                SkipRestOfLine(&text);
+                continue;
+            }
+
             obfuscation = &list[j];
             Q_strncpyz(obfuscation->name, token, sizeof(obfuscation->name));
 
@@ -185,9 +191,7 @@ obfuscation_t *CM_SetupObfuscationMapping()
                         obfuscation->heightDensity = 0;
                     }
 
-                    if (numObfuscations == MAX_OBFUSCATIONS) {
-                        Com_Printf("WARNING: exceeded MAX_OBFUSCATIONS (%i)", numObfuscations);
-                    } else {
+                    if (j == numObfuscations) {
                         numObfuscations++;
                     }
                 } else {
@@ -210,6 +214,8 @@ obfuscation_t *CM_SetupObfuscationMapping()
 
         FS_FreeFile(buffer);
     }
+
+    FS_FreeFileList(files);
 
     list[numObfuscations].name[0] = 0;
 
@@ -239,6 +245,7 @@ void CM_ObfuscationForShader(obfuscation_t *list, const char *shaderName, float 
         if (!Q_stricmp(shaderName, current->name)) {
             *widthDensity  = current->widthDensity;
             *heightDensity = current->heightDensity;
+            return;
         }
     }
 
@@ -323,15 +330,17 @@ float CM_ObfuscationTraceToLeaf(traceWork_t *tw, cLeaf_t *leaf)
     int       k;
     cbrush_t *b;
     float     total;
+    const int tid = CM_GetThreadId();
+    const int checkcount = cm.checkcount[tid];
 
     total = 0;
     // test box position against all brushes in the leaf
     for (k = 0; k < leaf->numLeafBrushes; k++) {
         b = &cm.brushes[cm.leafbrushes[leaf->firstLeafBrush + k]];
-        if (b->checkcount == cm.checkcount) {
+        if (b->checkcount[tid] == checkcount) {
             continue; // already checked this brush in another leaf
         }
-        b->checkcount = cm.checkcount;
+        b->checkcount[tid] = checkcount;
 
         if (!(b->contents & CONTENTS_DONOTENTER)) {
             continue;
@@ -423,7 +432,7 @@ float CM_ObfuscationTraceThroughTree(traceWork_t *tw, int num, float p1f, float 
     mid[1] = p1[1] + frac * (p2[1] - p1[1]);
     mid[2] = p1[2] + frac * (p2[2] - p1[2]);
 
-    CM_ObfuscationTraceThroughTree(tw, node->children[side], p1f, midf, p1, mid);
+    float total = CM_ObfuscationTraceThroughTree(tw, node->children[side], p1f, midf, p1, mid);
 
     // go past the node
     if (frac2 < 0) {
@@ -438,7 +447,7 @@ float CM_ObfuscationTraceThroughTree(traceWork_t *tw, int num, float p1f, float 
     mid[1] = p1[1] + frac2 * (p2[1] - p1[1]);
     mid[2] = p1[2] + frac2 * (p2[2] - p1[2]);
 
-    return CM_ObfuscationTraceThroughTree(tw, node->children[side ^ 1], midf, p2f, mid, p2);
+    return total + CM_ObfuscationTraceThroughTree(tw, node->children[side ^ 1], midf, p2f, mid, p2);
 }
 
 /*
@@ -455,7 +464,7 @@ float CM_ObfuscationTrace(const vec3_t start, const vec3_t end, clipHandle_t han
     model = CM_ClipHandleToModel(handle);
 
     c_traces++;
-    cm.checkcount++;
+    cm.checkcount[CM_GetThreadId()]++;
 
     VectorCopy(start, tw.start);
     VectorCopy(end, tw.end);

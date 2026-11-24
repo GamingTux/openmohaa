@@ -422,9 +422,12 @@ AliasListNode_t *Alias_ListFindNode(AliasList_t *list, const char *alias)
     }
 
     length = strlen(alias);
+    if (length >= sizeof(convalias)) {
+        length = sizeof(convalias) - 1;
+    }
 
-    for (index = 0; index < length; index++) {
-        convalias[index] = tolower(alias[index]);
+    for (index = 0; index < (int)length; index++) {
+        convalias[index] = tolower((unsigned char)alias[index]);
     }
 
     convalias[length] = 0;

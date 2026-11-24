@@ -3,6 +3,7 @@ attribute vec4 attr_TexCoord0;
 attribute vec3 attr_Normal;
 
 uniform vec4   u_DlightInfo;
+uniform vec3   u_LocalViewOrigin;
 
 #if defined(USE_DEFORM_VERTEXES)
 uniform int    u_DeformGen;
@@ -10,11 +11,14 @@ uniform float  u_DeformParams[5];
 uniform float  u_Time;
 #endif
 
-uniform vec4   u_Color;
 uniform mat4   u_ModelViewProjectionMatrix;
+uniform vec2   u_FarplaneFogParams;
 
 varying vec2   var_Tex1;
-varying vec4   var_Color;
+varying vec3   var_LightDist;
+varying vec3   var_Normal;
+varying vec3   var_ViewDir;
+varying float  var_FogFactor;
 
 #if defined(USE_DEFORM_VERTEXES)
 vec3 DeformPosition(const vec3 pos, const vec3 normal, const vec2 st)
@@ -74,19 +78,15 @@ vec3 DeformPosition(const vec3 pos, const vec3 normal, const vec2 st)
 void main()
 {
 	vec3 position = attr_Position;
-	vec3 normal = attr_Normal;
 
 #if defined(USE_DEFORM_VERTEXES)
-	position = DeformPosition(position, normal, attr_TexCoord0.st);
+	position = DeformPosition(position, attr_Normal, attr_TexCoord0.st);
 #endif
 
 	gl_Position = u_ModelViewProjectionMatrix * vec4(position, 1.0);
-		
-	vec3 dist = u_DlightInfo.xyz - position;
-
-	var_Tex1 = dist.xy * u_DlightInfo.a + vec2(0.5);
-	float dlightmod = step(0.0, dot(dist, normal));
-	dlightmod *= clamp(2.0 * (1.0 - abs(dist.z) * u_DlightInfo.a), 0.0, 1.0);
-	
-	var_Color = u_Color * dlightmod;
+	var_FogFactor = (gl_Position.w - u_FarplaneFogParams.x) * u_FarplaneFogParams.y;
+	var_Tex1 = attr_TexCoord0.st;
+	var_LightDist = u_DlightInfo.xyz - position;
+	var_Normal = attr_Normal;
+	var_ViewDir = u_LocalViewOrigin - position;
 }

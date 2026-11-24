@@ -26,6 +26,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../corepp/tiki.h"
 #include "../corepp/vector.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+#include <xmmintrin.h>
+#endif
+
 #define LL(x) x = LittleLong(x)
 
 qboolean   g_bInfoworldtris = qfalse;
@@ -159,7 +165,7 @@ void R_RegisterShaders(model_t *mod)
 */
 void RE_UnregisterServerModel(qhandle_t hModel)
 {
-    if (hModel < 0 || hModel >= MAX_MOD_KNOWN) {
+    if (hModel < 0 || hModel >= tr.numModels) {
         return;
     }
 
@@ -773,18 +779,28 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
 
     radius = R_GetRadius(&ent->e);
 
-    if (!lod_tool->integer) {
-        iRadiusCull = R_CullPointAndRadius(tiki_worldorigin, radius);
+    if (!lod_tool->integer && !(ent->e.renderfx & (RF_DEPTHHACK | RF_FIRST_PERSON))
+        && !(tr.refdef.rdflags & RDF_HUD)) {
+        float animRadius = RadiusFromBounds(tiki->a->mins, tiki->a->maxs) * tiki_scale;
+        float cullRadius = Q_max(radius, animRadius);
+
+        if (ent->e.renderfx & RF_FRAMELERP) {
+            vec3_t delta;
+            VectorSubtract(ent->e.origin, ent->e.oldorigin, delta);
+            cullRadius += VectorLength(delta);
+        }
+
+        iRadiusCull = R_CullPointAndRadius(tiki_worldorigin, cullRadius);
         if (r_showcull->integer & 2) {
             switch (iRadiusCull) {
             case CULL_IN:
-                R_DebugCircle(tiki_worldorigin, radius * 1.2f, 0, 1, 0, 0.5f, qfalse);
+                R_DebugCircle(tiki_worldorigin, cullRadius * 1.2f, 0, 1, 0, 0.5f, qfalse);
                 break;
             case CULL_CLIP:
-                R_DebugCircle(tiki_worldorigin, radius * 1.2f, 0, 1, 0, 0.5f, qfalse);
+                R_DebugCircle(tiki_worldorigin, cullRadius * 1.2f, 0, 1, 0, 0.5f, qfalse);
                 break;
             case CULL_OUT:
-                R_DebugCircle(tiki_worldorigin, radius * 1.2f + 32.f, 1, 0.2f, 0.2f, 0.5f, qfalse);
+                R_DebugCircle(tiki_worldorigin, cullRadius * 1.2f + 32.f, 1, 0.2f, 0.2f, 0.5f, qfalse);
                 break;
             }
         }
@@ -798,7 +814,7 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
             break;
         case CULL_OUT:
             tr.pc.c_sphere_cull_md3_out++;
-            break;
+            return;
         }
     }
 
@@ -821,27 +837,31 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
     );
     R_GetFrame(&ent->e, newFrame);
 
-    if (lod_tool->integer || iRadiusCull != CULL_CLIP
-        || R_CullSkelModel(tiki, &ent->e, newFrame, tiki_scale, tiki_localorigin) != CULL_OUT) {
-        //
-        // copy bones position and axis
-        //
-        for (i = 0; i < num_tags; i++) {
-            VectorCopy(newFrame->bones[i][3], outbones->offset);
-            outbones->matrix[0][0] = newFrame->bones[i][0][0];
-            outbones->matrix[0][1] = newFrame->bones[i][0][1];
-            outbones->matrix[0][2] = newFrame->bones[i][0][2];
-            outbones->matrix[0][3] = 0;
-            outbones->matrix[1][0] = newFrame->bones[i][1][0];
-            outbones->matrix[1][1] = newFrame->bones[i][1][1];
-            outbones->matrix[1][2] = newFrame->bones[i][1][2];
-            outbones->matrix[1][3] = 0;
-            outbones->matrix[2][0] = newFrame->bones[i][2][0];
-            outbones->matrix[2][1] = newFrame->bones[i][2][1];
-            outbones->matrix[2][2] = newFrame->bones[i][2][2];
-            outbones->matrix[2][3] = 0;
-            outbones++;
-        }
+    if (!lod_tool->integer && iRadiusCull == CULL_CLIP
+        && R_CullSkelModel(tiki, &ent->e, newFrame, tiki_scale, tiki_localorigin) == CULL_OUT) {
+        ri.Hunk_FreeTempMemory(newFrame);
+        return;
+    }
+
+    //
+    // copy bones position and axis
+    //
+    for (i = 0; i < num_tags; i++) {
+        VectorCopy(newFrame->bones[i][3], outbones->offset);
+        outbones->offset[3]    = 0;
+        outbones->matrix[0][0] = newFrame->bones[i][0][0];
+        outbones->matrix[0][1] = newFrame->bones[i][0][1];
+        outbones->matrix[0][2] = newFrame->bones[i][0][2];
+        outbones->matrix[0][3] = 0;
+        outbones->matrix[1][0] = newFrame->bones[i][1][0];
+        outbones->matrix[1][1] = newFrame->bones[i][1][1];
+        outbones->matrix[1][2] = newFrame->bones[i][1][2];
+        outbones->matrix[1][3] = 0;
+        outbones->matrix[2][0] = newFrame->bones[i][2][0];
+        outbones->matrix[2][1] = newFrame->bones[i][2][1];
+        outbones->matrix[2][2] = newFrame->bones[i][2][2];
+        outbones->matrix[2][3] = 0;
+        outbones++;
     }
 
     ri.Hunk_FreeTempMemory(newFrame);
@@ -947,6 +967,22 @@ SkelVertGetNormal
 */
 inline static void SkelVertGetNormal(skeletorVertex_t *vert, skelBoneCache_t *bone, vec3_t out)
 {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    float32x4_t res = vmulq_n_f32(vld1q_f32(bone->matrix[0]), vert->normal[0]);
+    res             = vfmaq_n_f32(res, vld1q_f32(bone->matrix[1]), vert->normal[1]);
+    res             = vfmaq_n_f32(res, vld1q_f32(bone->matrix[2]), vert->normal[2]);
+    vst1_f32(out, vget_low_f32(res));
+    vst1q_lane_f32(&out[2], res, 2);
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+    __m128 res = _mm_mul_ps(_mm_loadu_ps(bone->matrix[0]), _mm_set1_ps(vert->normal[0]));
+    res        = _mm_add_ps(res, _mm_mul_ps(_mm_loadu_ps(bone->matrix[1]), _mm_set1_ps(vert->normal[1])));
+    res        = _mm_add_ps(res, _mm_mul_ps(_mm_loadu_ps(bone->matrix[2]), _mm_set1_ps(vert->normal[2])));
+    float t[4];
+    _mm_storeu_ps(t, res);
+    out[0] = t[0];
+    out[1] = t[1];
+    out[2] = t[2];
+#else
     out[0] = vert->normal[0] * bone->matrix[0][0] + vert->normal[1] * bone->matrix[1][0]
            + vert->normal[2] * bone->matrix[2][0];
 
@@ -955,6 +991,7 @@ inline static void SkelVertGetNormal(skeletorVertex_t *vert, skelBoneCache_t *bo
 
     out[2] = vert->normal[0] * bone->matrix[0][2] + vert->normal[1] * bone->matrix[1][2]
            + vert->normal[2] * bone->matrix[2][2];
+#endif
 }
 
 /*
@@ -974,6 +1011,29 @@ SkelWeightGetXyz
 */
 inline static void SkelWeightGetXyz(skelWeight_t *weight, skelBoneCache_t *bone, vec3_t out)
 {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    float32x4_t pos = vld1q_f32(bone->offset);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[0]), weight->offset[0]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[1]), weight->offset[1]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[2]), weight->offset[2]);
+    pos             = vmulq_n_f32(pos, weight->boneWeight);
+
+    float32x4_t cur = vcombine_f32(vld1_f32(out), vld1_dup_f32(&out[2]));
+    cur             = vaddq_f32(cur, pos);
+    vst1_f32(out, vget_low_f32(cur));
+    vst1q_lane_f32(&out[2], cur, 2);
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+    __m128 pos = _mm_loadu_ps(bone->offset);
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[0]), _mm_set1_ps(weight->offset[0])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[1]), _mm_set1_ps(weight->offset[1])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[2]), _mm_set1_ps(weight->offset[2])));
+    pos        = _mm_mul_ps(pos, _mm_set1_ps(weight->boneWeight));
+    float t[4];
+    _mm_storeu_ps(t, pos);
+    out[0] += t[0];
+    out[1] += t[1];
+    out[2] += t[2];
+#else
     out[0] += ((weight->offset[0] * bone->matrix[0][0] + weight->offset[1] * bone->matrix[1][0]
                 + weight->offset[2] * bone->matrix[2][0])
                + bone->offset[0])
@@ -988,6 +1048,7 @@ inline static void SkelWeightGetXyz(skelWeight_t *weight, skelBoneCache_t *bone,
                 + weight->offset[2] * bone->matrix[2][2])
                + bone->offset[2])
             * weight->boneWeight;
+#endif
 }
 
 /*
@@ -1001,6 +1062,29 @@ inline static void SkelWeightMorphGetXyz(skelWeight_t *weight, skelBoneCache_t *
 
     VectorAdd(totalmorph, weight->offset, point);
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+    float32x4_t pos = vld1q_f32(bone->offset);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[0]), point[0]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[1]), point[1]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[2]), point[2]);
+    pos             = vmulq_n_f32(pos, weight->boneWeight);
+
+    float32x4_t cur = vcombine_f32(vld1_f32(out), vld1_dup_f32(&out[2]));
+    cur             = vaddq_f32(cur, pos);
+    vst1_f32(out, vget_low_f32(cur));
+    vst1q_lane_f32(&out[2], cur, 2);
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+    __m128 pos = _mm_loadu_ps(bone->offset);
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[0]), _mm_set1_ps(point[0])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[1]), _mm_set1_ps(point[1])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[2]), _mm_set1_ps(point[2])));
+    pos        = _mm_mul_ps(pos, _mm_set1_ps(weight->boneWeight));
+    float t[4];
+    _mm_storeu_ps(t, pos);
+    out[0] += t[0];
+    out[1] += t[1];
+    out[2] += t[2];
+#else
     out[0] += ((point[0] * bone->matrix[0][0] + point[1] * bone->matrix[1][0] + point[2] * bone->matrix[2][0])
                + bone->offset[0])
             * weight->boneWeight;
@@ -1012,6 +1096,7 @@ inline static void SkelWeightMorphGetXyz(skelWeight_t *weight, skelBoneCache_t *
     out[2] += ((point[0] * bone->matrix[0][2] + point[1] * bone->matrix[1][2] + point[2] * bone->matrix[2][2])
                + bone->offset[2])
             * weight->boneWeight;
+#endif
 }
 
 /*
@@ -1194,13 +1279,22 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
     bones  = &TIKI_Skel_Bones[backEnd.currentEntity->e.bonestart];
     morphs = &skeletorMorphCache[backEnd.currentEntity->e.morphstart];
 
+    int localChannels[256];
+    int numMappedBones = 0;
+    if (mesh > 0) {
+        numMappedBones = Q_min(skelmodel->numBones, (int)ARRAY_LEN(localChannels));
+        for (i = 0; i < numMappedBones; i++) {
+            localChannels[i] = ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[i].channel);
+        }
+    }
+
     if (backEnd.currentEntity->e.hasMorph) {
         if (mesh > 0) {
             for (vertNum = 0; vertNum < render_count; vertNum++) {
                 vec3_t normal;
                 vec3_t out;
                 vec3_t totalmorph;
-                int    channelNum;
+                int    boneIdx;
                 int    boneNum;
 
                 VectorClear(out);
@@ -1221,21 +1315,18 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
                     morph++;
                 }
 
-                if (newVerts->numMorphs) {
-                    channelNum = skelmodel->pBones[morph->morphIndex].channel;
-                } else {
-                    channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                }
-
-                boneNum = ri.TIKI_GetLocalChannel(tiki, channelNum);
+                boneIdx = weight->boneIndex;
+                boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                     : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
                 bone    = &bones[boneNum];
 
                 SkelVertGetNormal(newVerts, bone, normal);
 
                 for (weightNum = 0; weightNum < newVerts->numWeights; weightNum++) {
-                    channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                    boneNum    = ri.TIKI_GetLocalChannel(tiki, channelNum);
-                    bone       = &bones[boneNum];
+                    boneIdx = weight->boneIndex;
+                    boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                         : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
+                    bone    = &bones[boneNum];
 
                     if (!weightNum) {
                         SkelWeightMorphGetXyz(weight, bone, totalmorph, out);
@@ -1283,11 +1374,7 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
                     morph++;
                 }
 
-                if (newVerts->numMorphs) {
-                    bone = &bones[morph->morphIndex];
-                } else {
-                    bone = &bones[weight->boneIndex];
-                }
+                bone = &bones[weight->boneIndex];
 
                 SkelVertGetNormal(newVerts, bone, normal);
 
@@ -1322,7 +1409,7 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
             for (vertNum = 0; vertNum < render_count; vertNum++) {
                 vec3_t normal;
                 vec3_t out;
-                int    channelNum;
+                int    boneIdx;
                 int    boneNum;
 
                 VectorClear(out);
@@ -1331,16 +1418,18 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
                 weight = (skelWeight_t *)((byte *)newVerts + sizeof(skeletorVertex_t)
                                           + sizeof(skeletorMorph_t) * newVerts->numMorphs);
 
-                channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                boneNum    = ri.TIKI_GetLocalChannel(tiki, channelNum);
-                bone       = &bones[boneNum];
+                boneIdx = weight->boneIndex;
+                boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                     : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
+                bone    = &bones[boneNum];
 
                 SkelVertGetNormal(newVerts, bone, normal);
 
                 for (weightNum = 0; weightNum < newVerts->numWeights; weightNum++) {
-                    channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                    boneNum    = ri.TIKI_GetLocalChannel(tiki, channelNum);
-                    bone       = &bones[boneNum];
+                    boneIdx = weight->boneIndex;
+                    boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                         : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
+                    bone    = &bones[boneNum];
 
                     SkelWeightGetXyz(weight, bone, out);
 
@@ -1543,8 +1632,12 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
         render_count = surf->numVerts;
     }
 
+    if (surf->numVerts > (int)ARRAY_LEN(collapse)) {
+        render_count = surf->numVerts;
+    }
+
     indexes = surf->numTriangles * 3;
-    RB_CHECKOVERFLOW(render_count, surf->numTriangles);
+    RB_CHECKOVERFLOW(render_count, indexes);
 
     collapse_map = surf->pCollapse;
     triangles    = surf->pTriangles;
@@ -1552,12 +1645,16 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
     baseVertex   = tess.numVertexes;
     tess.numVertexes += render_count;
 
+    ptrdiff_t smIndex = backEnd.currentStaticModel - backEnd.refdef.staticModels;
+
     if (render_count == surf->numVerts) {
         for (j = 0; j < indexes; j++) {
             tess.indexes[baseIndex + j] = baseVertex + triangles[j];
         }
 
-        staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += indexes;
+        if (smIndex >= 0 && smIndex < (ptrdiff_t)ARRAY_LEN(staticModelNumIndexes)) {
+            staticModelNumIndexes[smIndex] += indexes;
+        }
         tess.numIndexes += indexes;
     } else {
         for (i = 0; i < render_count; i++) {
@@ -1579,7 +1676,9 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
             tess.indexes[baseIndex + j + 2] = baseVertex + collapse[triangles[j + 2]];
         }
 
-        staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += j;
+        if (smIndex >= 0 && smIndex < (ptrdiff_t)ARRAY_LEN(staticModelNumIndexes)) {
+            staticModelNumIndexes[smIndex] += j;
+        }
         tess.numIndexes += j;
     }
 
@@ -1668,7 +1767,7 @@ void R_PrintInfoWorldtris(void)
 
     totalNumTris = 0;
 
-    for (i = 0; i < ARRAY_LEN(entityNumIndexes); i++) {
+    for (i = 0; i < ARRAY_LEN(staticModelNumIndexes); i++) {
         numTris = staticModelNumIndexes[i] / 3;
         if (!numTris) {
             continue;
@@ -1852,27 +1951,20 @@ static int R_CullSkelModel(dtiki_t *tiki, refEntity_t *e, skelAnimFrame_t *newFr
 {
     vec3_t bounds[2];
     vec3_t delta;
+    float  lerpPad = 0.0f;
     int    i;
     int    cull;
 
-    // FIXME: not working properly
-    return CULL_IN;
-
-    if (tr.currentEntity->e.renderfx & RF_FRAMELERP) {
+    if (e->renderfx & RF_FRAMELERP) {
         VectorSubtract(e->origin, e->oldorigin, delta);
-    } else {
-        VectorClear(delta);
+        lerpPad = VectorLength(delta);
     }
 
     for (i = 0; i < 3; i++) {
-        bounds[0][i] = newFrame->bounds[0][i] * fScale + vLocalOrg[i];
-        bounds[1][i] = newFrame->bounds[1][i] * fScale + vLocalOrg[i];
-
-        if (delta[i] > 0) {
-            bounds[1][i] += delta[i];
-        } else {
-            bounds[0][i] += delta[i];
-        }
+        float minB   = Q_min(newFrame->bounds[0][i], tiki->a->mins[i]);
+        float maxB   = Q_max(newFrame->bounds[1][i], tiki->a->maxs[i]);
+        bounds[0][i] = minB * fScale + vLocalOrg[i] - lerpPad;
+        bounds[1][i] = maxB * fScale + vLocalOrg[i] + lerpPad;
     }
 
     cull = R_CullLocalBox(bounds);

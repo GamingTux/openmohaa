@@ -337,6 +337,15 @@ extern "C" {
         float viewkickMinDecay;
         float viewkickMaxDecay;
 
+        // remaster gunplay feel & muzzle dlight
+        int      muzzleLightTime;
+        float    muzzleLightRadius;
+        float    strafeRoll;
+        float    recoilRoll;
+        float    landDip;
+        float    prevVelZ;
+        qboolean prevOnGround;
+
         // objectives
         cobjective_t Objectives[20];
         float        ObjectivesAlphaTime;
@@ -513,6 +522,10 @@ extern "C" {
     //
     extern cvar_t *cg_fov;
     extern cvar_t *cg_cheats;
+    extern cvar_t *cg_marks_lifetime;
+    extern cvar_t *cg_modernGunplay;
+    extern cvar_t *cg_extendedFarplane;
+    extern cvar_t *cg_farplaneScale;
 
     //
     // cg_main.c

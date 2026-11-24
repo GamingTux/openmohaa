@@ -65,8 +65,10 @@ static qboolean	R_CullSurface( msurface_t *surf ) {
 		}
 		*/
 
-		// shadowmaps draw back surfaces
-		if ( tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW) )
+		// shadowmaps draw back surfaces (except Pi 5 single-cascade sun shadow which keeps
+		// front faces so 1-sided MOHAA roofs, walls and balconies cast solid shadows)
+		if ( (tr.viewParms.flags & (VPF_SHADOWMAP | VPF_DEPTHSHADOW))
+			&& !(tr.viewParms.flags & VPF_PISUNSHADOW) )
 		{
 			if (ct == CT_FRONT_SIDED)
 			{
@@ -167,7 +169,7 @@ static int R_DlightSurface( msurface_t *surf, int dlightBits ) {
 			}
 			dl = &tr.refdef.dlights[i];
 			d = DotProduct( dl->origin, surf->cullinfo.plane.normal ) - surf->cullinfo.plane.dist;
-			if ( d < -dl->radius || d > dl->radius ) {
+			if ( ( d < 0.0f && !r_dlightBacks->integer ) || d < -dl->radius || d > dl->radius ) {
 				// dlight doesn't reach the plane
 				dlightBits &= ~( 1 << i );
 			}
@@ -322,6 +324,29 @@ R_AddWorldSurface
 static void R_AddWorldSurface( msurface_t *surf, int dlightBits, int pshadowBits ) {
 	// FIXME: bmodel fog?
 
+	if ( surf->shader && surf->shader->isPortalSky ) {
+		return;
+	}
+
+	if ( tr.viewParms.flags & VPF_PISUNSHADOW ) {
+		shader_t *shadowSh = surf->shader;
+		if ( !R_ShaderCastsSunShadow( shadowSh ) ) {
+			return;
+		}
+		if ( R_CullSurface( surf ) ) {
+			return;
+		}
+		// Batch all opaque, front-sided, non-deformed world shadow casters under one
+		// depth-only shader so ~150+ world brush draw calls collapse into 1-3 batches.
+		if ( tr.defaultShader && shadowSh->numDeforms == 0 && shadowSh->cullType == CT_FRONT_SIDED
+			&& shadowSh->stages[0] && !( shadowSh->stages[0]->stateBits & GLS_ATEST_BITS ) )
+		{
+			shadowSh = tr.defaultShader;
+		}
+		R_AddDrawSurf( surf->data, shadowSh, 0, 0, 0, 0 );
+		return;
+	}
+
 	// try to cull before dlighting or adding
 	if ( R_CullSurface( surf ) ) {
 		return;
@@ -370,8 +395,10 @@ void R_AddBrushModelSurfaces ( trRefEntity_t *ent ) {
 		return;
 	}
 	
-	R_SetupEntityLighting( &tr.refdef, ent );
-	R_DlightBmodel( bmodel );
+	if ( !( tr.viewParms.flags & VPF_PISUNSHADOW ) ) {
+		R_SetupEntityLighting( &tr.refdef, ent );
+		R_DlightBmodel( bmodel );
+	}
 
 	for ( i = 0 ; i < bmodel->numSurfaces ; i++ ) {
 		int surf = bmodel->firstSurface + i;
@@ -565,17 +592,31 @@ static void R_RecursiveWorldNode( mnode_t *node, uint32_t planeBits, uint32_t dl
 		view = tr.world->marksurfaces + node->firstmarksurface;
 
 		c = node->nummarksurfaces;
+		tr.portalsky.cntNode = node;
 		while (c--) {
 			// just mark it as visible, so we don't jump out of the cache derefencing the surface
 			surf = *view;
 			if (tr.world->surfacesViewCount[surf] != tr.viewCount)
 			{
 				tr.world->surfacesViewCount[surf] = tr.viewCount;
+				if (tr.world->surfaces[surf].shader && tr.world->surfaces[surf].shader->isPortalSky)
+				{
+					if (!(tr.viewParms.flags & VPF_PISUNSHADOW) && !R_CullSurface(tr.world->surfaces + surf)) {
+						R_Sky_AddSurf(tr.world->surfaces + surf);
+					}
+					view++;
+					continue;
+				}
 				tr.world->surfacesDlightBits[surf] = dlightBits;
 				tr.world->surfacesPshadowBits[surf] = pshadowBits;
 			}
 			else
 			{
+				if (tr.world->surfaces[surf].shader && tr.world->surfaces[surf].shader->isPortalSky)
+				{
+					view++;
+					continue;
+				}
 				tr.world->surfacesDlightBits[surf] |= dlightBits;
 				tr.world->surfacesPshadowBits[surf] |= pshadowBits;
 			}
@@ -588,7 +629,8 @@ static void R_RecursiveWorldNode( mnode_t *node, uint32_t planeBits, uint32_t dl
 	// OPENMOHAA-specific stuff
 	//=========================
 
-	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky)
+	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky
+		&& !(tr.viewParms.flags & VPF_PISUNSHADOW))
 	{
 		int i;
 
@@ -597,7 +639,7 @@ static void R_RecursiveWorldNode( mnode_t *node, uint32_t planeBits, uint32_t dl
 		}
 	}
 
-	if (r_drawstaticdecals->integer) {
+	if (r_drawstaticdecals->integer && !(tr.viewParms.flags & VPF_PISUNSHADOW)) {
 		if (node->pFirstMarkFragment) {
 			R_AddPermanentMarkFragmentSurfaces(node->pFirstMarkFragment, node->iNumMarkFragment);
 		}
@@ -607,7 +649,7 @@ static void R_RecursiveWorldNode( mnode_t *node, uint32_t planeBits, uint32_t dl
 		int i;
 
 		for (i = 0; i < node->numStaticModels; i++) {
-			tr.world->visStaticModels[node->firstStaticModel + i]->visCount = tr.visCounts[tr.visIndex];
+			tr.world->visStaticModels[node->firstStaticModel + i]->visCount = tr.viewCount;
 		}
     }
 
@@ -786,7 +828,8 @@ void R_AddWorldSurfaces (void) {
 	//
 	// OPENMOHAA-specific stuff
 	//=========================
-    if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky) {
+    if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky
+		&& !(tr.viewParms.flags & VPF_PISUNSHADOW)) {
         R_TerrainPrepareFrame();
     }
     //=========================
@@ -850,19 +893,22 @@ void R_AddWorldSurfaces (void) {
     // OPENMOHAA-specific stuff
     //=========================
 
-	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky) {
+	if (r_drawterrain->integer && tr.refdef.render_terrain && !tr.viewParms.isPortalSky
+		&& !(tr.viewParms.flags & VPF_PISUNSHADOW)) {
 		R_AddTerrainSurfaces();
 	}
 	if (r_drawstaticmodels->integer) {
 		R_AddStaticModelSurfaces();
 	}
 
-	if (g_bInfostaticmodels) {
+	if (g_bInfostaticmodels && !(tr.viewParms.flags & VPF_PISUNSHADOW)) {
 		g_bInfostaticmodels = 0;
 		R_PrintInfoStaticModels();
 	}
 
-    R_UpdateLevelMarksSystem();
+	if (!(tr.viewParms.flags & VPF_PISUNSHADOW)) {
+		R_UpdateLevelMarksSystem();
+	}
 
     //=========================
 }
@@ -977,6 +1023,7 @@ int R_DlightTerrain(cTerraPatchUnpacked_t* surf, int dlightBits)
 		dlightMap = 1;
 	}
 
+	surf->drawinfo.dlightMap[0] = dlightMap;
     return dlightMap;
 }
 

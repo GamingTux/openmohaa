@@ -94,9 +94,13 @@ void RB_DrawSprite( const refSprite_t *spr ) {
         return;
 	}
 
-    model = tr.models;
+    model = tr.models[0];
 	if (spr->hModel > 0 && spr->hModel < tr.numModels) {
 		model = tr.models[spr->hModel];
+	}
+
+	if (!model || model->type != MOD_SPRITE || !model->d.sprite) {
+		return;
 	}
 
 	scale = spr->scale * model->d.sprite->scale;
@@ -175,6 +179,7 @@ void RB_DrawSprite( const refSprite_t *spr ) {
 		return;
 	}
 
+	RB_CheckVao(tess.vao);
 	RB_CHECKOVERFLOW(4, 6);
 
 	for (i = 0; i < 4; i++) {

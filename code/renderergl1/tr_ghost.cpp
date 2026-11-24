@@ -1581,11 +1581,15 @@ void R_UpdateGhostTextures()
     for (i = 1; i <= numTextures; i++) {
         GhostTexture *gt = ghostManager.m_textureList.ObjectAt(i);
 
+        if (!gt->m_image) {
+            continue;
+        }
+
         gt->Update();
         gt->Burn();
 
         GL_Bind(gt->m_image);
-        qglTexImage2D(GL_TEXTURE_2D, 0, 3, gt->m_width, gt->m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, gt->m_texture);
+        qglTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, gt->m_width, gt->m_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, gt->m_texture);
     }
 }
 
@@ -1637,14 +1641,22 @@ void LoadGHOST(const char *name, byte **pic, int *width, int *height)
     *width  = atoi(COM_ParseExt(&buf_p, qtrue));
     *height = atoi(COM_ParseExt(&buf_p, qtrue));
 
+    if (*width <= 0 || *height <= 0) {
+        ri.FS_FreeFile(buffer);
+        return;
+    }
+
     numParticles = atoi(COM_ParseExt(&buf_p, qtrue));
     numPixels    = *height * *width;
-    *pic         = new byte[numPixels * 4];
+    *pic         = (byte *)ri.Malloc(numPixels * 4);
+    Com_Memset(*pic, 0, numPixels * 4);
 
     gt            = new GhostTexture();
+    gt->m_name    = name;
     gt->m_width   = *width;
     gt->m_height  = *height;
     gt->m_texture = new unsigned int[numPixels];
+    Com_Memset(gt->m_texture, 0, numPixels * sizeof(unsigned int));
 
     gt->m_isburn   = atoi(COM_ParseExt(&buf_p, qtrue));
     gt->m_burnrate = atof(COM_ParseExt(&buf_p, qtrue));
@@ -1659,4 +1671,6 @@ void LoadGHOST(const char *name, byte **pic, int *width, int *height)
         gt->m_emitterList.AddObject(pe);
         pe->Load(&buf_p);
     }
+
+    ri.FS_FreeFile(buffer);
 }

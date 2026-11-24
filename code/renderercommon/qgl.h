@@ -112,6 +112,7 @@ extern void (APIENTRYP qglUnlockArraysEXT) (void);
 	GLE(void, ClearDepth, GLclampd depth) \
 	GLE(void, DepthRange, GLclampd near_val, GLclampd far_val) \
 	GLE(void, DrawBuffer, GLenum mode) \
+	GLE(void, ReadBuffer, GLenum mode) \
 	GLE(void, PolygonMode, GLenum face, GLenum mode) \
 
 // OpenGL 1.0/1.1 but not OpenGL 3.2 core profile or OpenGL ES 1.x
@@ -244,9 +245,18 @@ extern void (APIENTRYP qglUnlockArraysEXT) (void);
 #define GL_HALF_FLOAT_ARB                   0x140B
 #endif
 
+#ifndef GL_MAP_WRITE_BIT
+#define GL_MAP_WRITE_BIT                    0x0002
+#endif
+#ifndef GL_MAP_UNSYNCHRONIZED_BIT
+#define GL_MAP_UNSYNCHRONIZED_BIT           0x0020
+#endif
+
 // OpenGL 3.0 specific
 #define QGL_3_0_PROCS \
 	GLE(const GLubyte *, GetStringi, GLenum name, GLuint index) \
+	GLE(void *, MapBufferRange, GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) \
+	GLE(GLboolean, UnmapBuffer, GLenum target) \
 
 // GL_ARB_framebuffer_object, built-in to OpenGL 3.0
 #define QGL_ARB_framebuffer_object_PROCS \
@@ -320,6 +330,27 @@ extern void (APIENTRYP qglUnlockArraysEXT) (void);
 	GLE(GLvoid, NamedFramebufferTexture2DEXT, GLuint framebuffer, GLenum attachment, GLenum textarget, GLuint texture, GLint level) \
 	GLE(GLvoid, NamedFramebufferRenderbufferEXT, GLuint framebuffer, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) \
 
+#ifndef GL_MAP_PERSISTENT_BIT
+#define GL_MAP_PERSISTENT_BIT               0x0040
+#endif
+#ifndef GL_MAP_COHERENT_BIT
+#define GL_MAP_COHERENT_BIT                 0x0080
+#endif
+#ifndef GL_SYNC_GPU_COMMANDS_COMPLETE
+#define GL_SYNC_GPU_COMMANDS_COMPLETE       0x9117
+#endif
+#ifndef GL_SYNC_FLUSH_COMMANDS_BIT
+#define GL_SYNC_FLUSH_COMMANDS_BIT          0x00000001
+#endif
+
+// GL_ARB_buffer_storage + GL_ARB_draw_elements_base_vertex + GL_ARB_sync
+#define QGL_PERSISTENT_RING_PROCS \
+	GLE(void, BufferStorage, GLenum target, GLsizeiptr size, const void *data, GLbitfield flags) \
+	GLE(void, DrawElementsBaseVertex, GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex) \
+	GLE(GLsync, FenceSync, GLenum condition, GLbitfield flags) \
+	GLE(GLenum, ClientWaitSync, GLsync sync, GLbitfield flags, GLuint64 timeout) \
+	GLE(void, DeleteSync, GLsync sync) \
+
 #define GLE(ret, name, ...) typedef ret APIENTRY name##proc(__VA_ARGS__);
 QGL_1_1_PROCS;
 QGL_1_1_FIXED_FUNCTION_PROCS;
@@ -335,6 +366,7 @@ QGL_ARB_occlusion_query_PROCS;
 QGL_ARB_framebuffer_object_PROCS;
 QGL_ARB_vertex_array_object_PROCS;
 QGL_EXT_direct_state_access_PROCS;
+QGL_PERSISTENT_RING_PROCS;
 #undef GLE
 
 extern int qglMajorVersion, qglMinorVersion;

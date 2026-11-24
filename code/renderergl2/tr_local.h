@@ -51,6 +51,7 @@ QGL_ARB_occlusion_query_PROCS;
 QGL_ARB_framebuffer_object_PROCS;
 QGL_ARB_vertex_array_object_PROCS;
 QGL_EXT_direct_state_access_PROCS;
+QGL_PERSISTENT_RING_PROCS;
 #undef GLE
 
 #ifdef __cplusplus
@@ -140,8 +141,14 @@ typedef struct {
 	// OPENMOHAA-specific stuff
 	//
 
+    qboolean	bLightGridCalculated;
     int			iGridLighting;
+    qboolean	sphereCalculated;
+    int			lightingSphere;
     float		lodpercentage[2];
+    qboolean	skelCached;
+    float		skelRadius;
+    vec3_t		skelBounds[2];
 } trRefEntity_t;
 
 
@@ -194,6 +201,7 @@ typedef struct vao_s
 typedef enum {
 	SS_BAD,
 	SS_PORTAL,			// mirrors, portals, viewscreens
+	SS_PORTALSKY,
 	SS_ENVIRONMENT,		// sky box
 	SS_OPAQUE,			// opaque
 
@@ -353,7 +361,9 @@ typedef enum {
 	TCGEN_TEXTURE,
 	TCGEN_ENVIRONMENT_MAPPED,
 	TCGEN_FOG,
-	TCGEN_VECTOR			// S and T from world coordinates
+	TCGEN_VECTOR,			// S and T from world coordinates
+	TCGEN_ENVIRONMENT_MAPPED2,
+	TCGEN_SUN_REFLECTION
 } texCoordGen_t;
 
 typedef enum {
@@ -382,7 +392,13 @@ typedef enum {
 	TMOD_SCALE,
 	TMOD_STRETCH,
 	TMOD_ROTATE,
-	TMOD_ENTITY_TRANSLATE
+	TMOD_ENTITY_TRANSLATE,
+	TMOD_OFFSET,
+	TMOD_PARALLAX,
+	TMOD_MACRO,
+	TMOD_WAVETRANS,
+	TMOD_WAVETRANT,
+	TMOD_BULGETRANS
 } texMod_t;
 
 #define	MAX_SHADER_DEFORMS	3
@@ -420,6 +436,11 @@ typedef struct {
 	// + = clockwise
 	// - = counterclockwise
 	float			rotateSpeed;
+	float			rotateStart;
+	float			rotateCoef;
+
+	// used for TMOD_PARALLAX
+	float			rate[2];
 
 } texModInfo_t;
 
@@ -514,11 +535,14 @@ typedef struct {
 
 	float			alphaMin;
 	float			alphaMax;
+	int				isEmissiveGlow; // 0=none, 1=opaque lamp/window, 2=additive glow/flame
 	vec3_t			specOrigin;
 
     byte			colorConst[4];			// for CGEN_CONST and AGEN_CONST
 	byte			alphaConst;
 	byte			alphaConstMin;
+	qboolean		noFog;
+	int				multitextureEnv;		// 0, GL_MODULATE, or GL_ADD (MOHAA nextBundle)
 } shaderStage_t;
 
 struct shaderCommands_s;
@@ -623,7 +647,22 @@ typedef struct shader_s {
 	qboolean force32bit;
     float fDistRange;
     float fDistNear;
+    qboolean isPortalSky;
+    qboolean needsLGrid;
+    qboolean needsLSpherical;
+    qboolean needsCpuColors;
+    qboolean needsStaticCpuColors;
     spriteParms_t sprite;
+    int flags;
+    vec4_t modelMaterial;       // x=matteSpec, y=metalSpecDelta, z=matteFresnel, w=metalFresnelDelta
+    vec4_t modelMaterial2;      // x=matteShinScale, y=metalShinScaleDelta, z=metalTintMix, w=bumpStrength
+    int modelMaterialMode;      // 0=adaptive, 1=weapon, 2=vehicle/metal, 3=matte (skin/hair/cloth/rubber)
+    int waterType;              // 0=none, 1=ocean, 2=river, 3=pond, 4=indoor/subpen, 5=canal/sludge
+    int waterStage;             // primary stage index rendered with modern water shader
+    vec4_t worldRelief;         // x=reliefStrength, y=specStrength, z=shininessScale, w=materialTrait (>0 metalTint, <0 snowGlint)
+    float worldFresnel;         // grazing-angle Fresnel sheen strength (wet/glass/metal/cobble)
+    float softParticle;         // >0: world-unit depth fade distance for soft particles
+    int windType;               // 0=none, 1=foliage canopy/bush, 2=flag/banner
 } shader_t;
 
 enum
@@ -689,8 +728,10 @@ enum
 	GENERICDEF_USE_FOG              = 0x0008,
 	GENERICDEF_USE_RGBAGEN          = 0x0010,
 	GENERICDEF_USE_BONE_ANIMATION   = 0x0020,
-	GENERICDEF_ALL                  = 0x003F,
-	GENERICDEF_COUNT                = 0x0040,
+	GENERICDEF_USE_ALPHATEST        = 0x0040,
+	GENERICDEF_USE_MULTITEXTURE     = 0x0080,
+	GENERICDEF_ALL                  = 0x00FF,
+	GENERICDEF_COUNT                = 0x0100,
 };
 
 enum
@@ -720,8 +761,10 @@ enum
 	LIGHTDEF_USE_PARALLAXMAP     = 0x0010,
 	LIGHTDEF_USE_SHADOWMAP       = 0x0020,
 	LIGHTDEF_ENTITY_BONE_ANIMATION = 0x0040,
-	LIGHTDEF_ALL                 = 0x007F,
-	LIGHTDEF_COUNT               = 0x0080
+	LIGHTDEF_USE_ALPHATEST       = 0x0080,
+	LIGHTDEF_USE_PISUNSHADOW     = 0x0100,
+	LIGHTDEF_ALL                 = 0x01FF,
+	LIGHTDEF_COUNT               = 0x0200
 };
 
 enum
@@ -730,6 +773,34 @@ enum
 	SHADOWMAPDEF_USE_BONE_ANIMATION   = 0x0002,
 	SHADOWMAPDEF_ALL                  = 0x0003,
 	SHADOWMAPDEF_COUNT                = 0x0004
+};
+
+enum
+{
+	MODELDEF_USE_TCGEN_AND_TCMOD = 0x0001,
+	MODELDEF_USE_ALPHATEST       = 0x0002,
+	MODELDEF_USE_SPECULAR        = 0x0004,
+	MODELDEF_USE_SUN_SHADOW      = 0x0008,
+	MODELDEF_ALL                 = 0x000F,
+	MODELDEF_COUNT               = 0x0010
+};
+
+enum
+{
+	WATERDEF_USE_DEFORM_VERTEXES = 0x0001,
+	WATERDEF_USE_MULTITEXTURE    = 0x0002,
+	WATERDEF_USE_LIGHTMAP        = 0x0004,
+	WATERDEF_ALL                 = 0x0007,
+	WATERDEF_COUNT               = 0x0008
+};
+
+enum
+{
+	SOFTPARTDEF_USE_TCGEN_AND_TCMOD = 0x0001,
+	SOFTPARTDEF_USE_MULTITEXTURE    = 0x0002,
+	SOFTPARTDEF_USE_FOG             = 0x0004,
+	SOFTPARTDEF_ALL                 = 0x0007,
+	SOFTPARTDEF_COUNT               = 0x0008
 };
 
 enum
@@ -842,6 +913,62 @@ typedef enum
 
 	UNIFORM_GREYSCALE,
 
+	UNIFORM_FARPLANEFOGCOLOR,
+	UNIFORM_FARPLANEFOGPARAMS,
+
+	UNIFORM_TCGEN1,
+	UNIFORM_TCGEN1VECTOR0,
+	UNIFORM_TCGEN1VECTOR1,
+	UNIFORM_BUNDLE1TEXMATRIX0,
+	UNIFORM_BUNDLE1TEXMATRIX1,
+	UNIFORM_BUNDLE1TEXMATRIX2,
+	UNIFORM_BUNDLE1TEXMATRIX3,
+	UNIFORM_BUNDLE1TEXMATRIX4,
+	UNIFORM_BUNDLE1TEXMATRIX5,
+	UNIFORM_BUNDLE1TEXMATRIX6,
+	UNIFORM_BUNDLE1TEXMATRIX7,
+	UNIFORM_MULTITEXTUREENV,
+
+	UNIFORM_MODELLIGHTCOUNT,
+	UNIFORM_MODELLIGHTPOS0,
+	UNIFORM_MODELLIGHTPOS1,
+	UNIFORM_MODELLIGHTPOS2,
+	UNIFORM_MODELLIGHTPOS3,
+	UNIFORM_MODELLIGHTCOLOR0,
+	UNIFORM_MODELLIGHTCOLOR1,
+	UNIFORM_MODELLIGHTCOLOR2,
+	UNIFORM_MODELLIGHTCOLOR3,
+	UNIFORM_MODELLOCALUP,
+	UNIFORM_MODELSCREENRIGHT,
+	UNIFORM_MODELSCREENUP,
+	UNIFORM_MODELMATERIAL,
+	UNIFORM_MODELMATERIAL2,
+
+	UNIFORM_WATERSUNDIR,
+	UNIFORM_WATERSUNCOLOR,
+	UNIFORM_WATERSKYCOLOR,
+	UNIFORM_WATERHORIZONCOLOR,
+	UNIFORM_WATERPARAMS,
+
+	UNIFORM_WORLDRELIEFRIGHT,
+	UNIFORM_WORLDRELIEFUP,
+	UNIFORM_WORLDRELIEFLIGHT,
+	UNIFORM_WORLDRELIEFPARAMS,
+
+	UNIFORM_SOFTPARTICLEPARAMS,
+	UNIFORM_SOFTPARTICLEZ,
+	UNIFORM_SOFTPARTICLEMASK,
+
+	UNIFORM_SUNSHADOWMAP,
+	UNIFORM_SUNSHADOWMVP,
+	UNIFORM_SUNSHADOWDIR,
+	UNIFORM_SUNSHADOWPARAMS,
+
+	UNIFORM_POSTFXBOUNDS,
+	UNIFORM_POSTFXSHARPEN,
+	UNIFORM_POSTFXGRADE,
+	UNIFORM_WINDPARAMS,
+
 	UNIFORM_COUNT
 } uniform_t;
 
@@ -936,6 +1063,13 @@ typedef struct {
     vec3_t sky_axis[3];
     qboolean skybox_farplane;
     qboolean render_terrain;
+
+	qboolean piSunShadowActive;
+	float    piSunShadowMvp[16];
+	vec3_t   piSunShadowDir;
+	float    piSunShadowStrength;
+	float    piSunShadowRadius;
+	int      piSunShadowRes;
 } trRefdef_t;
 
 
@@ -1002,7 +1136,8 @@ typedef enum {
 	VPF_ORTHOGRAPHIC    = 0x10,
 	VPF_USESUNLIGHT     = 0x20,
 	VPF_FARPLANEFRUSTUM = 0x40,
-	VPF_NOCUBEMAPS      = 0x80
+	VPF_NOCUBEMAPS      = 0x80,
+	VPF_PISUNSHADOW     = 0x100
 } viewParmFlags_t;
 
 typedef struct {
@@ -1453,7 +1588,15 @@ typedef struct cStaticModelUnpacked_s {
     float cull_radius;
     int iGridLighting;
     float lodpercentage[2];
+    int staticVaoBaseVertex;
 } cStaticModelUnpacked_t;
+
+typedef struct staticModelSurfIbo_s {
+    const skelSurfaceGame_t *surf;
+    int firstIndex[3];
+    int numIndexes[3];
+    int minVerts[3];
+} staticModelSurfIbo_t;
 
 typedef struct refSprite_s {
     surfaceType_t surftype;
@@ -1924,6 +2067,9 @@ typedef struct {
 
 	qboolean vertexArrayObject;
 	qboolean directStateAccess;
+	qboolean persistentRing;
+	qboolean invalidateFramebuffer;
+	qboolean framebufferFetch;
 
 	int maxVertexAttribs;
 	qboolean gpuVertexAnimation;
@@ -1965,6 +2111,11 @@ typedef struct {
 	int     c_dlightDraws;
 
 	int		msec;			// total msec for backend run
+	int		usec_vbo;
+	int		usec_draw;
+	int		usec_surfs;
+	int		usec_swap;
+	int		usec_frontend;
 
 	//
 	// OPENMOHAA-specific stuff
@@ -1993,6 +2144,10 @@ typedef struct {
 	qboolean    colorMask[4];
 	qboolean    depthFill;
 	float       greyscale;
+	qboolean    renderFboCleared;
+	qboolean    postProcessedToScreen;
+	qboolean    softDepthCaptured;
+	image_t    *softDepthBoundImage;
 
 	//
 	// OPENMOHAA-specific stuff
@@ -2055,6 +2210,9 @@ typedef struct {
 	image_t					*screenScratchImage;
 	image_t					*textureScratchImage[2];
 	image_t                 *quarterImage[2];
+	image_t                 *bloomImage[2];
+	image_t                 *softDepthImage;
+	image_t                 *piSunShadowImage;
 	image_t					*calcLevelsImage;
 	image_t					*targetLevelsImage;
 	image_t					*fixedLevelsImage;
@@ -2074,6 +2232,9 @@ typedef struct {
 	FBO_t					*screenScratchFbo;
 	FBO_t					*textureScratchFbo[2];
 	FBO_t                   *quarterFbo[2];
+	FBO_t                   *bloomFbo[2];
+	FBO_t                   *softDepthFbo;
+	FBO_t                   *piSunShadowFbo;
 	FBO_t					*calcLevelsFbo;
 	FBO_t					*targetLevelsFbo;
 	FBO_t					*sunShadowFbo[4];
@@ -2116,6 +2277,9 @@ typedef struct {
 	shaderProgram_t dlightShader[DLIGHTDEF_COUNT];
 	shaderProgram_t lightallShader[LIGHTDEF_COUNT];
 	shaderProgram_t shadowmapShader[SHADOWMAPDEF_COUNT];
+	shaderProgram_t modelLightShader[MODELDEF_COUNT];
+	shaderProgram_t waterShader[WATERDEF_COUNT];
+	shaderProgram_t softParticleShader[SOFTPARTDEF_COUNT];
 	shaderProgram_t pshadowShader;
 	shaderProgram_t down4xShader;
 	shaderProgram_t bokehShader;
@@ -2126,6 +2290,7 @@ typedef struct {
 	shaderProgram_t depthBlurShader[4];
 	shaderProgram_t testcubeShader;
 	shaderProgram_t greyscaleShader;
+	shaderProgram_t postFxShader[5]; // 0=bright, 1=blur, 2=combine+bloom, 3=combine(nobloom), 4=on-chip filmic
 
 
 	// -----------------------------------------
@@ -2149,6 +2314,27 @@ typedef struct {
 	vec3_t					sunDirection;
 	vec3_t                  lastCascadeSunDirection;
 	float                   lastCascadeSunMvp[16];
+
+	qboolean                piSunShadowValid;
+	int                     piSunShadowLastFrame;
+	int                     piSunShadowLastMode;
+	vec3_t                  piSunShadowLastOrigin;
+	vec3_t                  piSunShadowLastForward;
+	mat4_t                  piSunShadowCachedMvp;
+	vec3_t                  piSunShadowCachedDir;
+	float                   piSunShadowCachedStrength;
+	float                   piSunShadowCachedRadius;
+	int                     piSunShadowCachedRes;
+
+	float                   drsScale;
+	float                   drsEmaMs;
+	int                     drsLastMs;
+	int                     drsLastAdjustMs;
+
+	vao_t                  *staticModelVao;
+	staticModelSurfIbo_t   *staticModelSurfIbos;
+	int                     numStaticModelSurfIbos;
+	int                     staticModelSurfIboCap;
 
 	frontEndCounters_t		pc;
 	int						frontEndMsec;		// not in pc due to clearing issue
@@ -2399,6 +2585,24 @@ extern cvar_t	*r_drawstaticdecals;
 extern cvar_t	*r_drawterrain;
 extern cvar_t	*r_drawsprites;
 extern cvar_t	*r_drawspherelights;
+extern cvar_t	*r_modelPerPixelLighting;
+extern cvar_t	*r_modernWater;
+extern cvar_t	*r_worldMicroRelief;
+extern cvar_t	*r_bloom;
+extern cvar_t	*r_filmicTonemap;
+extern cvar_t	*r_renderScale;
+extern cvar_t	*r_modernDlights;
+extern cvar_t	*r_softParticles;
+extern cvar_t	*r_dynamicSunShadows;
+extern cvar_t	*r_dynamicSunShadowsRate;
+extern cvar_t	*r_dynamicResolution;
+extern cvar_t	*r_dynamicResolutionTarget;
+extern cvar_t	*r_dynamicResolutionMin;
+extern cvar_t	*r_sharpen;
+extern cvar_t	*r_extendedLod;
+extern cvar_t	*r_foliageWind;
+extern cvar_t	*r_emissiveGlow;
+extern cvar_t	*r_mapAtmosphere;
 
 extern cvar_t	*r_numdebuglines;
 extern cvar_t	*r_stipplelines;
@@ -2429,6 +2633,8 @@ extern cvar_t *r_entlight_errbound;
 extern cvar_t *r_entlight_cubelevel;
 extern cvar_t *r_entlight_cubefraction;
 extern cvar_t *r_entlight_maxcalc;
+extern cvar_t *r_fastentlight;
+extern cvar_t *r_smoothsmokelight;
 extern cvar_t *r_light_lines;
 extern cvar_t *r_light_sun_line;
 extern cvar_t *r_light_int_scale;
@@ -2521,6 +2727,8 @@ void R_RenderView( viewParms_t *parms );
 void R_RenderDlightCubemaps(const refdef_t *fd);
 void R_RenderPshadowMaps(const refdef_t *fd);
 void R_RenderSunShadowMaps(const refdef_t *fd, int level);
+void R_RenderPiSunShadowMap(const refdef_t *fd);
+void R_InvalidatePiSunShadowCache(void);
 void R_RenderCubemapSide( int cubemapIndex, int cubemapSide, qboolean subscene );
 
 void R_AddMD3Surfaces( trRefEntity_t *e );
@@ -2606,6 +2814,37 @@ void	GL_Cull( int cullType );
 
 #define GLS_DEFAULT			GLS_DEPTHMASK_TRUE
 
+static ID_INLINE qboolean R_ShaderCastsSunShadow( const shader_t *shader )
+{
+	const shaderStage_t *st;
+
+	if ( !shader || shader->isSky || shader->isPortal || shader->isPortalSky
+		|| shader->polygonOffset || shader->waterType > 0
+		|| ( shader->surfaceFlags & ( SURF_SKY | SURF_NODRAW | SURF_HINT ) )
+		|| shader->sort > SS_SEE_THROUGH
+		|| shader->sort < SS_OPAQUE )
+	{
+		return qfalse;
+	}
+
+	st = shader->stages[0];
+	if ( !st || !st->active ) {
+		return qfalse;
+	}
+
+	if ( !( st->stateBits & GLS_DEPTHMASK_TRUE ) ) {
+		return qfalse;
+	}
+
+	if ( !( st->stateBits & GLS_ATEST_BITS )
+		&& ( st->stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) ) )
+	{
+		return qfalse;
+	}
+
+	return qtrue;
+}
+
 void	RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty);
 void	RE_UploadCinematic (int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty);
 
@@ -2637,11 +2876,20 @@ void	R_InitFogTable( void );
 float	R_FogFactor( float s, float t );
 void	R_InitImages( void );
 void	R_DeleteTextures( void );
+void	R_FreeLightmapImages( void );
+void	R_InvalidateLightmapShaders( void );
 int		R_SumOfUsedImages( void );
 void	R_InitSkins( void );
 skin_t	*R_GetSkinByHandle( qhandle_t hSkin );
 
 int R_ComputeLOD( trRefEntity_t *ent );
+
+typedef void (APIENTRY *qglInvalidateFramebuffer_t)(GLenum target, GLsizei numAttachments, const GLenum *attachments);
+extern qglInvalidateFramebuffer_t qglInvalidateFramebuffer_ext;
+
+qboolean RB_WantOffscreen3D( void );
+qboolean RB_UseDirectScreenPost( void );
+FBO_t *RB_Get2DFbo( void );
 
 const void *RB_TakeVideoFrameCmd( const void *data );
 
@@ -2762,6 +3010,7 @@ typedef struct shaderCommands_s
 	int         pshadowBits;
 
 	int			firstIndex;
+	int			baseVertex;
 	int			numIndexes;
 	int			numVertexes;
 
@@ -2790,6 +3039,7 @@ void RB_StageIteratorSky( void );
 void RB_StageIteratorVertexLitTexture( void );
 void RB_StageIteratorLightmappedMultitexture( void );
 
+void RB_CheckVao( vao_t *vao );
 void RB_AddQuadStamp( vec3_t origin, vec3_t left, vec3_t up, float color[4] );
 void RB_AddQuadStampExt( vec3_t origin, vec3_t left, vec3_t up, float color[4], float s1, float t1, float s2, float t2 );
 void RB_InstantQuad( vec4_t quadVerts[4] );
@@ -2926,6 +3176,7 @@ void            R_ShutdownVaos(void);
 void            R_VaoList_f(void);
 
 void            RB_UpdateTessVao(unsigned int attribBits);
+void            R_VaoRingEndFrame(void);
 
 void VaoCache_Commit(void);
 void VaoCache_DrawElements(int numIndexes, int firstIndex);
@@ -3086,8 +3337,11 @@ void RB_SetupEntityGridLighting();
 void RB_SetupStaticModelGridLighting(trRefdef_t* refdef, cStaticModelUnpacked_t* ent, const vec3_t lightOrigin);
 
 void RB_Light_Real(unsigned char* colors);
+void RB_Light_CubeMapAmbientOnly(unsigned char* colors);
+void RB_Light_Residual(unsigned char* colors, int startLight);
 void RB_Sphere_BuildDLights();
 void RB_Sphere_SetupEntity();
+void RB_Sphere_SetupEntityFor(trRefEntity_t *ent, sphereor_t *pSphere);
 void RB_Grid_SetupEntity();
 void RB_Grid_SetupStaticModel();
 void RB_Light_Fullbright(unsigned char* colors);
@@ -3234,6 +3488,9 @@ void R_InfoStaticModels_f(void);
 void R_PrintInfoStaticModels();
 void R_AddSkelSurfaces(trRefEntity_t* ent);
 void R_AddStaticModelSurfaces(void);
+void R_BuildStaticModelVao(void);
+void R_FreeStaticModelVao(void);
+const staticModelSurfIbo_t* R_FindStaticModelSurfIbo(const skelSurfaceGame_t* surf);
 void R_CountTikiLodTris(dtiki_t* tiki, float lodpercentage, int* render_tris, int* total_tris);
 float R_CalcLod(const vec3_t origin, float radius);
 int GetLodCutoff(struct skelHeaderGame_s* skelmodel, float lod_val, int renderfx);
@@ -3308,6 +3565,11 @@ void	RB_CalcFogTexCoords( float *dstTexCoords );
 void	RB_CalcScaleTexMatrix( const float scale[2], float *matrix );
 void	RB_CalcScrollTexMatrix( const float scrollSpeed[2], float *matrix );
 void	RB_CalcRotateTexMatrix( float degsPerSecond, float *matrix );
+void	RB_CalcRotateTexMatrixEx( float degsPerSecond, float rotateCoef, float rotateStart, float *matrix );
+void	RB_CalcOffsetTexMatrix( const float offset[2], float *matrix );
+void	RB_CalcParallaxTexMatrix( const float rate[2], float *matrix );
+void	RB_CalcTransWaveTexMatrix( const waveForm_t *wf, float *matrix );
+void	RB_CalcTransWaveTTexMatrix( const waveForm_t *wf, float *matrix );
 void RB_CalcTurbulentFactors( const waveForm_t *wf, float *amplitude, float *now );
 void	RB_CalcTransformTexMatrix( const texModInfo_t *tmi, float *matrix  );
 void	RB_CalcStretchTexMatrix( const waveForm_t *wf, float *matrix );

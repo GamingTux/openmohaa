@@ -79,6 +79,7 @@ QGL_ARB_occlusion_query_PROCS;
 QGL_ARB_framebuffer_object_PROCS;
 QGL_ARB_vertex_array_object_PROCS;
 QGL_EXT_direct_state_access_PROCS;
+QGL_PERSISTENT_RING_PROCS;
 #undef GLE
 
 /*
@@ -381,6 +382,7 @@ static void GLimp_ClearProcAddresses( void ) {
 	QGL_ARB_framebuffer_object_PROCS;
 	QGL_ARB_vertex_array_object_PROCS;
 	QGL_EXT_direct_state_access_PROCS;
+	QGL_PERSISTENT_RING_PROCS;
 
 	qglActiveTextureARB = NULL;
 	qglClientActiveTextureARB = NULL;
@@ -403,7 +405,7 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 		int profileMask;
 		int majorVersion;
 		int minorVersion;
-	} contexts[4];
+	} contexts[6];
 	int numContexts, type;
 	const char *glstring;
 	int perChannelColorBits;
@@ -566,6 +568,16 @@ static int GLimp_SetMode(int mode, qboolean fullscreen, qboolean noborder, qbool
 		contexts[numContexts].profileMask = SDL_GL_CONTEXT_PROFILE_CORE;
 		contexts[numContexts].majorVersion = 3;
 		contexts[numContexts].minorVersion = 2;
+		numContexts++;
+
+		contexts[numContexts].profileMask = 0;
+		contexts[numContexts].majorVersion = 3;
+		contexts[numContexts].minorVersion = 1;
+		numContexts++;
+
+		contexts[numContexts].profileMask = SDL_GL_CONTEXT_PROFILE_CORE;
+		contexts[numContexts].majorVersion = 3;
+		contexts[numContexts].minorVersion = 1;
 		numContexts++;
 
 		contexts[numContexts].profileMask = 0;

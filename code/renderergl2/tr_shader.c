@@ -29,7 +29,7 @@ static char *s_shaderText;
 // dynamically allocated memory if it is valid.
 static	shaderStage_t	stages[MAX_SHADER_STAGES];		
 static	shader_t		shader;
-static	texModInfo_t	texMods[MAX_SHADER_STAGES][TR_MAX_TEXMODS];
+static	texModInfo_t	texMods[MAX_SHADER_STAGES][NUM_TEXTURE_BUNDLES][TR_MAX_TEXMODS];
 static	int				shader_realLightmapIndex;
 
 #define FILE_HASH_SIZE		1024
@@ -395,19 +395,19 @@ static void ParseWaveForm( char **text, waveForm_t *wave )
 ParseTexMod
 ===================
 */
-static void ParseTexMod( char *_text, shaderStage_t *stage )
+static void ParseTexMod( char *_text, shaderStage_t *stage, int cntBundle )
 {
 	const char *token;
 	char **text = &_text;
 	texModInfo_t *tmi;
 
-	if ( stage->bundle[0].numTexMods == TR_MAX_TEXMODS ) {
+	if ( stage->bundle[cntBundle].numTexMods == TR_MAX_TEXMODS ) {
 		ri.Error( ERR_DROP, "ERROR: too many tcMod stages in shader '%s'", shader.name );
 		return;
 	}
 
-	tmi = &stage->bundle[0].texMods[stage->bundle[0].numTexMods];
-	stage->bundle[0].numTexMods++;
+	tmi = &stage->bundle[cntBundle].texMods[stage->bundle[cntBundle].numTexMods];
+	stage->bundle[cntBundle].numTexMods++;
 
 	token = COM_ParseExt( text, qfalse );
 
@@ -480,14 +480,45 @@ static void ParseTexMod( char *_text, shaderStage_t *stage )
 			ri.Printf( PRINT_WARNING, "WARNING: missing scale scroll parms in shader '%s'\n", shader.name );
 			return;
 		}
-		tmi->scroll[0] = atof( token );
+		if ( !Q_stricmp( token, "fromEntity" ) ) {
+			tmi->scroll[0] = 1234567;
+		} else {
+			tmi->scroll[0] = atof( token );
+		}
 		token = COM_ParseExt( text, qfalse );
 		if ( token[0] == 0 )
 		{
 			ri.Printf( PRINT_WARNING, "WARNING: missing scale scroll parms in shader '%s'\n", shader.name );
 			return;
 		}
-		tmi->scroll[1] = atof( token );
+		if ( !Q_stricmp( token, "fromEntity" ) ) {
+			tmi->scroll[1] = 1234567;
+		} else {
+			tmi->scroll[1] = atof( token );
+		}
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] ) {
+			float v = atof( token );
+			int iv = (int)(v * 1000.0f);
+			if ( iv < 0 ) {
+				tmi->scroll[0] -= (rand() % (-iv)) / 1000.0f;
+			} else if ( iv > 0 ) {
+				tmi->scroll[0] += (rand() % iv) / 1000.0f;
+			}
+		}
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] ) {
+			float v = atof( token );
+			int iv = (int)(v * 1000.0f);
+			if ( iv < 0 ) {
+				tmi->scroll[1] -= (rand() % (-iv)) / 1000.0f;
+			} else if ( iv > 0 ) {
+				tmi->scroll[1] += (rand() % iv) / 1000.0f;
+			}
+		}
+
 		tmi->type = TMOD_SCROLL;
 	}
 	//
@@ -495,47 +526,50 @@ static void ParseTexMod( char *_text, shaderStage_t *stage )
 	//
 	else if ( !Q_stricmp( token, "stretch" ) )
 	{
+		ParseWaveForm( text, &tmi->wave );
+		tmi->type = TMOD_STRETCH;
+	}
+	else if ( !Q_stricmp( token, "wavetrans" ) )
+	{
+		ParseWaveForm( text, &tmi->wave );
+		tmi->type = TMOD_WAVETRANS;
+	}
+	else if ( !Q_stricmp( token, "wavetrant" ) )
+	{
+		ParseWaveForm( text, &tmi->wave );
+		tmi->type = TMOD_WAVETRANT;
+	}
+	else if ( !Q_stricmp( token, "bulge" ) )
+	{
 		token = COM_ParseExt( text, qfalse );
-		if ( token[0] == 0 )
-		{
-			ri.Printf( PRINT_WARNING, "WARNING: missing stretch parms in shader '%s'\n", shader.name );
-			return;
-		}
-		tmi->wave.func = NameToGenFunc( token );
-
-		token = COM_ParseExt( text, qfalse );
-		if ( token[0] == 0 )
-		{
-			ri.Printf( PRINT_WARNING, "WARNING: missing stretch parms in shader '%s'\n", shader.name );
+		if ( token[0] == 0 ) {
+			ri.Printf( PRINT_WARNING, "WARNING: missing tcMod bulge parms in shader '%s'\n", shader.name );
 			return;
 		}
 		tmi->wave.base = atof( token );
 
 		token = COM_ParseExt( text, qfalse );
-		if ( token[0] == 0 )
-		{
-			ri.Printf( PRINT_WARNING, "WARNING: missing stretch parms in shader '%s'\n", shader.name );
+		if ( token[0] == 0 ) {
+			ri.Printf( PRINT_WARNING, "WARNING: missing tcMod bulge parms in shader '%s'\n", shader.name );
 			return;
 		}
 		tmi->wave.amplitude = atof( token );
 
 		token = COM_ParseExt( text, qfalse );
-		if ( token[0] == 0 )
-		{
-			ri.Printf( PRINT_WARNING, "WARNING: missing stretch parms in shader '%s'\n", shader.name );
+		if ( token[0] == 0 ) {
+			ri.Printf( PRINT_WARNING, "WARNING: missing tcMod bulge parms in shader '%s'\n", shader.name );
+			return;
+		}
+		tmi->wave.frequency = atof( token );
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] == 0 ) {
+			ri.Printf( PRINT_WARNING, "WARNING: missing tcMod bulge parms in shader '%s'\n", shader.name );
 			return;
 		}
 		tmi->wave.phase = atof( token );
 
-		token = COM_ParseExt( text, qfalse );
-		if ( token[0] == 0 )
-		{
-			ri.Printf( PRINT_WARNING, "WARNING: missing stretch parms in shader '%s'\n", shader.name );
-			return;
-		}
-		tmi->wave.frequency = atof( token );
-		
-		tmi->type = TMOD_STRETCH;
+		tmi->type = TMOD_BULGETRANS;
 	}
 	//
 	// transform
@@ -603,8 +637,84 @@ static void ParseTexMod( char *_text, shaderStage_t *stage )
 			ri.Printf( PRINT_WARNING, "WARNING: missing tcMod rotate parms in shader '%s'\n", shader.name );
 			return;
 		}
-		tmi->rotateSpeed = atof( token );
+		if ( !Q_stricmp( token, "fromEntity" ) ) {
+			tmi->rotateSpeed = 1234567;
+		} else {
+			tmi->rotateSpeed = atof( token );
+		}
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] ) {
+			if ( !Q_stricmp( token, "fromEntity" ) ) {
+				tmi->rotateStart = 1234567;
+			} else {
+				tmi->rotateStart = atof( token );
+			}
+		} else {
+			tmi->rotateStart = 0;
+		}
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] ) {
+			tmi->rotateCoef = atof( token );
+		} else {
+			tmi->rotateCoef = 1;
+		}
+
 		tmi->type = TMOD_ROTATE;
+	}
+	//
+	// offset
+	//
+	else if ( !Q_stricmp( token, "offset" ) )
+	{
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] == 0 )
+		{
+			ri.Printf( PRINT_WARNING, "WARNING: missing offset parms in shader '%s'\n", shader.name );
+			return;
+		}
+		if ( !Q_stricmp( token, "fromEntity" ) ) {
+			tmi->scroll[0] = 1234567;
+		} else {
+			tmi->scroll[0] = atof( token );
+		}
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] == 0 )
+		{
+			ri.Printf( PRINT_WARNING, "WARNING: missing offset parms in shader '%s'\n", shader.name );
+			return;
+		}
+		if ( !Q_stricmp( token, "fromEntity" ) ) {
+			tmi->scroll[1] = 1234567;
+		} else {
+			tmi->scroll[1] = atof( token );
+		}
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] ) {
+			float v = atof( token );
+			int iv = (int)(v * 1000.0f);
+			if ( iv < 0 ) {
+				tmi->scroll[0] -= (rand() % (-iv + 1)) / 1000.0f;
+			} else if ( iv > 0 ) {
+				tmi->scroll[0] += (rand() % (iv + 1)) / 1000.0f;
+			}
+		}
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] ) {
+			float v = atof( token );
+			int iv = (int)(v * 1000.0f);
+			if ( iv < 0 ) {
+				tmi->scroll[1] -= (rand() % (-iv + 1)) / 1000.0f;
+			} else if ( iv > 0 ) {
+				tmi->scroll[1] += (rand() % (iv + 1)) / 1000.0f;
+			}
+		}
+
+		tmi->type = TMOD_OFFSET;
 	}
 	//
 	// entityTranslate
@@ -612,6 +722,44 @@ static void ParseTexMod( char *_text, shaderStage_t *stage )
 	else if ( !Q_stricmp( token, "entityTranslate" ) )
 	{
 		tmi->type = TMOD_ENTITY_TRANSLATE;
+	}
+	else if ( !Q_stricmp( token, "parallax" ) )
+	{
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] == 0 )
+		{
+			ri.Printf( PRINT_WARNING, "WARNING: missing rate parms in shader '%s'\n", shader.name );
+			return;
+		}
+		tmi->rate[0] = atof( token );
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] == 0 )
+		{
+			ri.Printf( PRINT_WARNING, "WARNING: missing rate parms in shader '%s'\n", shader.name );
+			return;
+		}
+		tmi->rate[1] = atof( token );
+		tmi->type = TMOD_PARALLAX;
+	}
+	else if ( !Q_stricmp( token, "macro" ) )
+	{
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] == 0 )
+		{
+			ri.Printf( PRINT_WARNING, "WARNING: missing scale parms in shader '%s' for macro definition\n", shader.name );
+			return;
+		}
+		tmi->scale[0] = (atof( token ) != 0.0f) ? (1.0f / atof( token )) : 1.0f;
+
+		token = COM_ParseExt( text, qfalse );
+		if ( token[0] == 0 )
+		{
+			ri.Printf( PRINT_WARNING, "WARNING: missing scale parms in shader '%s' for macro definition\n", shader.name );
+			return;
+		}
+		tmi->scale[1] = (atof( token ) != 0.0f) ? (1.0f / atof( token )) : 1.0f;
+		tmi->type = TMOD_MACRO;
 	}
 	else
 	{
@@ -638,6 +786,8 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 	int depthTestBits = 0;
 	int fogBits = 0;
 	qboolean shouldProcess = qtrue;
+	qboolean stageNoMipMaps = shader.noMipMaps;
+	qboolean stageNoPicMip = shader.noPicMip;
 	//=========================
 
 	stage->active = qtrue;
@@ -654,6 +804,16 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 		if ( token[0] == '}' )
 		{
 			break;
+		}
+		else if ( !Q_stricmp( token, "nomipmaps" ) )
+		{
+			stageNoMipMaps = qtrue;
+			continue;
+		}
+		else if ( !Q_stricmp( token, "nopicmip" ) )
+		{
+			stageNoPicMip = qtrue;
+			continue;
 		}
 		//
 		// map <name>
@@ -703,10 +863,10 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				imgType_t type = IMGTYPE_COLORALPHA;
 				imgFlags_t flags = IMGFLAG_NONE;
 
-				if (!shader.noMipMaps)
+				if (!stageNoMipMaps)
 					flags |= IMGFLAG_MIPMAP;
 
-				if (!shader.noPicMip)
+				if (!stageNoPicMip)
 					flags |= IMGFLAG_PICMIP;
 
 				if (stage->type == ST_NORMALMAP || stage->type == ST_NORMALPARALLAXMAP)
@@ -759,10 +919,10 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				return qfalse;
 			}
 
-			if (!shader.noMipMaps)
+			if (!stageNoMipMaps)
 				flags |= IMGFLAG_MIPMAP;
 
-			if (!shader.noPicMip)
+			if (!stageNoPicMip)
 				flags |= IMGFLAG_PICMIP;
 
 			if (stage->type == ST_NORMALMAP || stage->type == ST_NORMALPARALLAXMAP)
@@ -814,10 +974,10 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				if ( num < MAX_IMAGE_ANIMATIONS ) {
 					imgFlags_t flags = IMGFLAG_NONE;
 
-					if (!shader.noMipMaps)
+					if (!stageNoMipMaps)
 						flags |= IMGFLAG_MIPMAP;
 
-					if (!shader.noPicMip)
+					if (!stageNoPicMip)
 						flags |= IMGFLAG_PICMIP;
 
 					stage->bundle[cntBundle].image[num] = R_FindImageFile( token, IMGTYPE_COLORALPHA, flags );
@@ -1219,6 +1379,9 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				stage->constantColor[0] = 255 * color[0];
 				stage->constantColor[1] = 255 * color[1];
 				stage->constantColor[2] = 255 * color[2];
+				stage->colorConst[0] = stage->constantColor[0];
+				stage->colorConst[1] = stage->constantColor[1];
+				stage->colorConst[2] = stage->constantColor[2];
 
 				stage->rgbGen = CGEN_CONST;
 			}
@@ -1279,7 +1442,12 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				stage->colorConst[0] = v[0] * 255.0;
 				stage->colorConst[1] = v[1] * 255.0;
 				stage->colorConst[2] = v[2] * 255.0;
+				stage->constantColor[0] = stage->colorConst[0];
+				stage->constantColor[1] = stage->colorConst[1];
+				stage->constantColor[2] = stage->colorConst[2];
+				ParseWaveForm(text, &stage->rgbWave);
 				stage->rgbGen = CGEN_MULTIPLY_BY_WAVEFORM;
+				shader.flags |= 2;
 			}
 			else if (!Q_stricmp(token, "global"))
 			{
@@ -1314,6 +1482,9 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				stage->constantColor[0] = 255 * color[0];
 				stage->constantColor[1] = 255 * color[1];
 				stage->constantColor[2] = 255 * color[2];
+				stage->colorConst[0] = stage->constantColor[0];
+				stage->colorConst[1] = stage->constantColor[1];
+				stage->colorConst[2] = stage->constantColor[2];
 
 				stage->rgbGen = CGEN_CONST;
 			}
@@ -1431,6 +1602,7 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 			{
 				token = COM_ParseExt( text, qfalse );
 				stage->constantColor[3] = 255 * atof( token );
+				stage->colorConst[3] = stage->constantColor[3];
 				stage->alphaGen = AGEN_CONST;
 			}
 			else if ( !Q_stricmp( token, "identity" ) )
@@ -1626,6 +1798,7 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 			{
 				token = COM_ParseExt(text, qfalse);
 				stage->constantColor[3] = 255 * atof(token);
+				stage->colorConst[3] = stage->constantColor[3];
 				stage->alphaGen = AGEN_CONST;
 			}
 			else if (!Q_stricmp(token, "skyAlpha"))
@@ -1697,6 +1870,14 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 			{
 				stage->bundle[cntBundle].tcGen = TCGEN_ENVIRONMENT_MAPPED;
 			}
+			else if ( !Q_stricmp( token, "environmentmodel" ) )
+			{
+				stage->bundle[cntBundle].tcGen = TCGEN_ENVIRONMENT_MAPPED2;
+			}
+			else if ( !Q_stricmp( token, "sunreflection" ) )
+			{
+				stage->bundle[cntBundle].tcGen = TCGEN_SUN_REFLECTION;
+			}
 			else if ( !Q_stricmp( token, "lightmap" ) )
 			{
 				stage->bundle[cntBundle].tcGen = TCGEN_LIGHTMAP;
@@ -1733,7 +1914,7 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				Q_strcat( buffer, sizeof (buffer), " " );
 			}
 
-			ParseTexMod( buffer, stage );
+			ParseTexMod( buffer, stage, cntBundle );
 
 			continue;
 		}
@@ -1792,10 +1973,10 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 				if ( num < MAX_IMAGE_ANIMATIONS ) {
 					imgFlags_t flags = IMGFLAG_NONE;
 
-					if (!shader.noMipMaps)
+					if (!stageNoMipMaps)
 						flags |= IMGFLAG_MIPMAP;
 
-					if (!shader.noPicMip)
+					if (!stageNoPicMip)
 						flags |= IMGFLAG_PICMIP;
 
 					stage->bundle[cntBundle].image[num] = R_FindImageFile( token, IMGTYPE_COLORALPHA, flags );
@@ -1810,7 +1991,7 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 		}
 		else if (!Q_stricmp(token, "nofog"))
 		{
-			// FIXME: unimplemented
+			stage->noFog = qtrue;
 			continue;
 		}
 		else if (!Q_stricmp(token, "depthmask"))
@@ -1840,20 +2021,15 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 		}
 		else if (!Q_stricmp(token, "nextBundle"))
 		{
-			//if (!qglActiveTextureARB) {
-			//	ri.Printf(PRINT_ALL, "WARNING: " PRODUCT_NAME " requires a video card with multitexturing capability\n");
-			//	return qfalse;
-			//}
-
 			token = COM_ParseExt(text, qfalse);
 			if (token[0] && !Q_stricmp(token, "add")) {
-				//stage->multitextureEnv = GL_ADD;
+				stage->multitextureEnv = GL_ADD;
 			} else {
-				//stage->multitextureEnv = GL_MODULATE;
+				stage->multitextureEnv = GL_MODULATE;
 			}
 
 			cntBundle++;
-			if (cntBundle > NUM_TEXTURE_BUNDLES) {
+			if (cntBundle >= NUM_TEXTURE_BUNDLES) {
 				ri.Printf(PRINT_WARNING, "WARNING: too many nextBundle commands in shader '%s'\n", shader.name);
 				return qfalse;
 			}
@@ -1904,11 +2080,19 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 		}
 	}
 
+	if (!shouldProcess) {
+		stage->active = qfalse;
+		stage->rgbGen = CGEN_BAD;
+		return qtrue;
+	}
+
 	//
 	// if cgen isn't explicitly specified, use either identity or identitylighting
 	//
 	if ( stage->rgbGen == CGEN_BAD ) {
-		if ( blendSrcBits == 0 ||
+		if (cntBundle || stage->bundle[0].isLightmap) {
+			stage->rgbGen = CGEN_IDENTITY;
+		} else if ( blendSrcBits == 0 ||
 			blendSrcBits == GLS_SRCBLEND_ONE || 
 			blendSrcBits == GLS_SRCBLEND_SRC_ALPHA ) {
 			stage->rgbGen = CGEN_IDENTITY_LIGHTING;
@@ -1931,7 +2115,9 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 	// decide which agens we can skip
 	if ( stage->alphaGen == AGEN_IDENTITY ) {
 		if ( stage->rgbGen == CGEN_IDENTITY
-			|| stage->rgbGen == CGEN_LIGHTING_DIFFUSE ) {
+			|| stage->rgbGen == CGEN_LIGHTING_DIFFUSE
+			|| stage->rgbGen == CGEN_LIGHTING_GRID
+			|| stage->rgbGen == CGEN_LIGHTING_SPHERICAL ) {
 			stage->alphaGen = AGEN_SKIP;
 		}
 	}
@@ -1942,7 +2128,8 @@ static qboolean ParseStage( shaderStage_t *stage, char **text )
 	stage->stateBits = depthMaskBits | 
 					   blendSrcBits | blendDstBits | 
 					   atestBits | 
-					   depthFuncBits;
+					   depthFuncBits |
+					   colorBits;
 
 	return qtrue;
 }
@@ -2290,6 +2477,10 @@ infoParm_t	infoParms[] = {
 	{"nodrop",		1,	0,	CONTENTS_NODROP },		// don't drop items or leave bodies (death fog, lava, etc)
 	{"nonsolid",	1,	SURF_NONSOLID,	0},						// clears the solid flag
 
+	{"fence",		1,	0,	CONTENTS_FENCE },
+	{"weaponclip",	1,	0,	CONTENTS_WEAPONCLIP },
+	{"vehicleclip",	1,	0,	CONTENTS_VEHICLECLIP },
+
 	// utility relevant attributes
 	{"origin",		1,	0,	CONTENTS_ORIGIN },		// center of rotating brushes
 	{"trans",		0,	0,	CONTENTS_TRANSLUCENT },	// don't eat contained surfaces
@@ -2315,12 +2506,30 @@ infoParm_t	infoParms[] = {
 	{"flesh",		0,	SURF_FLESH,		0 },
 	{"nosteps",		0,	SURF_NOSTEPS,	0 },
 
+	// surface types
+	{"paper",		0,	SURF_PAPER,		0 },
+	{"wood",		0,	SURF_WOOD,		0 },
+	{"metal",		0,	SURF_METAL,		0 },
+	{"rock",		0,	SURF_ROCK,		0 },
+	{"dirt",		0,	SURF_DIRT,		0 },
+	{"grill",		0,	SURF_GRILL,		0 },
+	{"grass",		0,	SURF_GRASS,		0 },
+	{"mud",			0,	SURF_MUD,		0 },
+	{"puddle",		0,	SURF_PUDDLE,	0 },
+	{"glass",		0,	SURF_GLASS,		0 },
+	{"gravel",		0,	SURF_GRAVEL,	0 },
+	{"sand",		0,	SURF_SAND,		0 },
+	{"foliage",		0,	SURF_FOLIAGE,	0 },
+	{"snow",		0,	SURF_SNOW,		0 },
+	{"carpet",		0,	SURF_CARPET,	0 },
+
 	// drawsurf attributes
 	{"nodraw",		0,	SURF_NODRAW,	0 },	// don't generate a drawsurface (or a lightmap)
 	{"pointlight",	0,	SURF_POINTLIGHT, 0 },	// sample lighting at vertexes
 	{"nolightmap",	0,	SURF_NOLIGHTMAP,0 },	// don't generate a lightmap
 	{"nodlight",	0,	SURF_NODLIGHT, 0 },		// don't ever add dynamic lights
-	{"dust",		0,	SURF_DUST, 0}			// leave a dust trail when walking on this surface
+	{"dust",		0,	SURF_DUST, 0},			// leave a dust trail when walking on this surface
+	{"castshadow",	0,	SURF_CASTSHADOW, 0}
 };
 
 
@@ -2400,8 +2609,11 @@ static qboolean ParseShader( char **text )
 			{
 				return qfalse;
 			}
-			stages[s].active = qtrue;
-			s++;
+			if ( stages[s].rgbGen != CGEN_BAD )
+			{
+				stages[s].active = qtrue;
+				s++;
+			}
 
 			continue;
 		}
@@ -2607,6 +2819,10 @@ static qboolean ParseShader( char **text )
 			{
 				shader.cullType = CT_BACK_SIDED;
 			}
+			else if ( !Q_stricmp( token, "front" ) || !Q_stricmp( token, "frontside" ) || !Q_stricmp( token, "frontsided" ) )
+			{
+				shader.cullType = CT_FRONT_SIDED;
+			}
 			else
 			{
 				ri.Printf( PRINT_WARNING, "WARNING: invalid cull parm '%s' in shader '%s'\n", token, shader.name );
@@ -2632,7 +2848,75 @@ static qboolean ParseShader( char **text )
 		}
 		else if (!Q_stricmp(token, "noMerge"))
 		{
-			// FIXME: unimplemented
+			shader.flags |= 1;
+			continue;
+		}
+		else if (!Q_stricmp(token, "portalsky"))
+		{
+			shader.sort = SS_PORTALSKY;
+			shader.isPortalSky = qtrue;
+			continue;
+		}
+		else if (!Q_stricmp(token, "ifCvar") || !Q_stricmp(token, "ifCvarnot")
+			|| !Q_stricmp(token, "#if") || !Q_stricmp(token, "#if_not"))
+		{
+			cvar_t* var;
+			qboolean isNot = (Q_stricmp(token, "ifCvarnot") == 0 || Q_stricmp(token, "#if_not") == 0);
+			qboolean evaluatedValue;
+
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0]) {
+				continue;
+			}
+			var = ri.Cvar_Get(token, "0", 0);
+
+			token = COM_ParseExt(text, qfalse);
+			if (!token[0]) {
+				evaluatedValue = (var->integer != 0);
+			} else if (atof(token) != var->value) {
+				evaluatedValue = qfalse;
+			} else if (var->value) {
+				evaluatedValue = qtrue;
+			} else if (token[0] == '0' || (token[0] == '.' && token[1] == '0')) {
+				evaluatedValue = qtrue;
+			} else if (!Q_stricmp(var->string, token)) {
+				evaluatedValue = qtrue;
+			} else {
+				evaluatedValue = qfalse;
+			}
+
+			if (!(evaluatedValue ^ isNot)) {
+				int depth = 1;
+				while (depth > 0) {
+					token = COM_ParseExt(text, qtrue);
+					if (!token[0]) break;
+					if (!Q_stricmp(token, "#if") || !Q_stricmp(token, "#if_not")) {
+						depth++;
+					} else if (!Q_stricmp(token, "#endif")) {
+						depth--;
+					} else if (!Q_stricmp(token, "#else") && depth == 1) {
+						break;
+					}
+				}
+			}
+			continue;
+		}
+		else if (!Q_stricmp(token, "#else"))
+		{
+			int depth = 1;
+			while (depth > 0) {
+				token = COM_ParseExt(text, qtrue);
+				if (!token[0]) break;
+				if (!Q_stricmp(token, "#if") || !Q_stricmp(token, "#if_not")) {
+					depth++;
+				} else if (!Q_stricmp(token, "#endif")) {
+					depth--;
+				}
+			}
+			continue;
+		}
+		else if (!Q_stricmp(token, "#endif"))
+		{
 			continue;
 		}
 		else if (!Q_stricmp(token, "spritegen"))
@@ -2684,8 +2968,16 @@ static qboolean ParseShader( char **text )
 	//
 	// ignore shaders that don't have any stages, unless it is a sky or fog
 	//
-	if ( s == 0 && !shader.isSky && !(shader.contentFlags & CONTENTS_FOG ) ) {
+	if ( s == 0 && !shader.isSky && !(shader.contentFlags & CONTENTS_FOG ) && !(shader.surfaceFlags & SURF_NODRAW) ) {
 		return qfalse;
+	}
+
+	if ( !(shader.flags & 2) ) {
+		shader.flags &= ~1;
+	}
+
+	if ( (shader.contentFlags & CONTENTS_FENCE) && shader.cullType == CT_TWO_SIDED ) {
+		shader.cullType = CT_FRONT_SIDED;
 	}
 
 	shader.explicitlyDefined = qtrue;
@@ -2800,21 +3092,22 @@ static void ComputeVertexAttribs(void)
 
 		if (pStage->glslShaderGroup == tr.lightallShader)
 		{
-			shader.vertexAttribs |= ATTR_NORMAL;
+			qboolean fullLight = (r_normalMapping->integer || r_specularMapping->integer);
+			int lightType = pStage->glslShaderIndex & LIGHTDEF_LIGHTTYPE_MASK;
 
-			if ((pStage->glslShaderIndex & LIGHTDEF_LIGHTTYPE_MASK) && !(r_normalMapping->integer == 0 && r_specularMapping->integer == 0))
+			if (fullLight || lightType == LIGHTDEF_USE_LIGHT_VECTOR)
 			{
-				shader.vertexAttribs |= ATTR_TANGENT;
+				shader.vertexAttribs |= ATTR_NORMAL;
 			}
 
-			switch (pStage->glslShaderIndex & LIGHTDEF_LIGHTTYPE_MASK)
+			if (lightType && fullLight)
 			{
-				case LIGHTDEF_USE_LIGHTMAP:
-				case LIGHTDEF_USE_LIGHT_VERTEX:
+				shader.vertexAttribs |= ATTR_TANGENT;
+
+				if (lightType == LIGHTDEF_USE_LIGHTMAP || lightType == LIGHTDEF_USE_LIGHT_VERTEX)
+				{
 					shader.vertexAttribs |= ATTR_LIGHTDIRECTION;
-					break;
-				default:
-					break;
+				}
 			}
 		}
 
@@ -2834,6 +3127,8 @@ static void ComputeVertexAttribs(void)
 					shader.vertexAttribs |= ATTR_LIGHTCOORD;
 					break;
 				case TCGEN_ENVIRONMENT_MAPPED:
+				case TCGEN_ENVIRONMENT_MAPPED2:
+				case TCGEN_SUN_REFLECTION:
 					shader.vertexAttribs |= ATTR_NORMAL;
 					break;
 
@@ -2852,6 +3147,18 @@ static void ComputeVertexAttribs(void)
 				shader.vertexAttribs |= ATTR_COLOR;
 				break;
 
+			case CGEN_LIGHTING_SPHERICAL:
+			case CGEN_STATIC:
+			case CGEN_DOT:
+			case CGEN_ONE_MINUS_DOT:
+				shader.vertexAttribs |= ATTR_COLOR | ATTR_NORMAL;
+				break;
+
+			case CGEN_SCOORD:
+			case CGEN_TCOORD:
+				shader.vertexAttribs |= ATTR_COLOR | ATTR_TEXCOORD;
+				break;
+
 			case CGEN_LIGHTING_DIFFUSE:
 				shader.vertexAttribs |= ATTR_NORMAL;
 				break;
@@ -2868,7 +3175,22 @@ static void ComputeVertexAttribs(void)
 
 			case AGEN_VERTEX:
 			case AGEN_ONE_MINUS_VERTEX:
+			case AGEN_DIST_FADE:
+			case AGEN_ONE_MINUS_DIST_FADE:
+			case AGEN_HEIGHT_FADE:
 				shader.vertexAttribs |= ATTR_COLOR;
+				break;
+
+			case AGEN_DOT:
+			case AGEN_ONE_MINUS_DOT:
+			case AGEN_DOT_VIEW:
+			case AGEN_ONE_MINUS_DOT_VIEW:
+				shader.vertexAttribs |= ATTR_COLOR | ATTR_NORMAL;
+				break;
+
+			case AGEN_SCOORD:
+			case AGEN_TCOORD:
+				shader.vertexAttribs |= ATTR_COLOR | ATTR_TEXCOORD;
 				break;
 
 			default:
@@ -2883,6 +3205,8 @@ static void CollapseStagesToLightall(shaderStage_t *diffuse,
 	qboolean useLightVector, qboolean useLightVertex, qboolean parallax, qboolean tcgen)
 {
 	int defs = 0;
+	qboolean hasLightmap = (lightmap != NULL)
+		|| (diffuse->bundle[TB_LIGHTMAP].isLightmap && diffuse->bundle[TB_LIGHTMAP].image[0] != NULL);
 
 	//ri.Printf(PRINT_ALL, "shader %s has diffuse %s", shader.name, diffuse->bundle[0].image[0]->imgName);
 
@@ -2895,6 +3219,10 @@ static void CollapseStagesToLightall(shaderStage_t *diffuse,
 		diffuse->bundle[TB_LIGHTMAP] = lightmap->bundle[0];
 		defs |= LIGHTDEF_USE_LIGHTMAP;
 	}
+	else if (hasLightmap)
+	{
+		defs |= LIGHTDEF_USE_LIGHTMAP;
+	}
 	else if (useLightVector)
 	{
 		defs |= LIGHTDEF_USE_LIGHT_VECTOR;
@@ -2904,10 +3232,10 @@ static void CollapseStagesToLightall(shaderStage_t *diffuse,
 		defs |= LIGHTDEF_USE_LIGHT_VERTEX;
 	}
 
-	if (r_deluxeMapping->integer && tr.worldDeluxeMapping && lightmap && shader.lightmapIndex >= 0)
+	if (r_deluxeMapping->integer && tr.worldDeluxeMapping && hasLightmap && shader.lightmapIndex >= 0)
 	{
 		//ri.Printf(PRINT_ALL, ", deluxemap");
-		diffuse->bundle[TB_DELUXEMAP] = lightmap->bundle[0];
+		diffuse->bundle[TB_DELUXEMAP] = diffuse->bundle[TB_LIGHTMAP];
 		diffuse->bundle[TB_DELUXEMAP].image[0] = tr.deluxemaps[shader.lightmapIndex];
 	}
 
@@ -2923,7 +3251,7 @@ static void CollapseStagesToLightall(shaderStage_t *diffuse,
 
 			VectorCopy4(normal->normalScale, diffuse->normalScale);
 		}
-		else if ((lightmap || useLightVector || useLightVertex) && (diffuseImg = diffuse->bundle[TB_DIFFUSEMAP].image[0]))
+		else if ((hasLightmap || useLightVector || useLightVertex) && (diffuseImg = diffuse->bundle[TB_DIFFUSEMAP].image[0]))
 		{
 			char normalName[MAX_QPATH];
 			image_t *normalImg;
@@ -2969,7 +3297,7 @@ static void CollapseStagesToLightall(shaderStage_t *diffuse,
 			diffuse->bundle[TB_SPECULARMAP] = specular->bundle[0];
 			VectorCopy4(specular->specularScale, diffuse->specularScale);
 		}
-		else if ((lightmap || useLightVector || useLightVertex) && (diffuseImg = diffuse->bundle[TB_DIFFUSEMAP].image[0]))
+		else if ((hasLightmap || useLightVector || useLightVertex) && (diffuseImg = diffuse->bundle[TB_DIFFUSEMAP].image[0]))
 		{
 			char specularName[MAX_QPATH];
 			image_t *specularImg;
@@ -3055,6 +3383,15 @@ static int CollapseStagesToGLSL(void)
 				break;
 			}
 
+			if (pStage->bundle[1].image[0])
+			{
+				if (!pStage->bundle[1].isLightmap || pStage->multitextureEnv == GL_ADD || pStage->bundle[1].numTexMods)
+				{
+					skip = qtrue;
+					break;
+				}
+			}
+
 			if (pStage->bundle[0].tcGen == TCGEN_LIGHTMAP)
 			{
 				int blendBits = pStage->stateBits & ( GLS_DSTBLEND_BITS | GLS_SRCBLEND_BITS );
@@ -3072,6 +3409,8 @@ static int CollapseStagesToGLSL(void)
 				case TCGEN_TEXTURE:
 				case TCGEN_LIGHTMAP:
 				case TCGEN_ENVIRONMENT_MAPPED:
+				case TCGEN_ENVIRONMENT_MAPPED2:
+				case TCGEN_SUN_REFLECTION:
 				case TCGEN_VECTOR:
 					break;
 				default:
@@ -3151,7 +3490,7 @@ static int CollapseStagesToGLSL(void)
 						break;
 
 					case ST_COLORMAP:
-						if (pStage2->bundle[0].tcGen == TCGEN_LIGHTMAP)
+						if (!diffuse->bundle[TB_LIGHTMAP].isLightmap && pStage2->bundle[0].tcGen == TCGEN_LIGHTMAP)
 						{
 							int blendBits = pStage->stateBits & ( GLS_DSTBLEND_BITS | GLS_SRCBLEND_BITS );
 
@@ -3173,6 +3512,8 @@ static int CollapseStagesToGLSL(void)
 
 			tcgen = qfalse;
 			if (diffuse->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED
+				|| diffuse->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED2
+				|| diffuse->bundle[0].tcGen == TCGEN_SUN_REFLECTION
 				|| diffuse->bundle[0].tcGen == TCGEN_LIGHTMAP
 				|| diffuse->bundle[0].tcGen == TCGEN_VECTOR)
 			{
@@ -3689,8 +4030,12 @@ static void InitShaderEx( const char *name, int lightmapIndex, int realLightmapI
 	shader.lightmapIndex = lightmapIndex;
 	shader_realLightmapIndex = realLightmapIndex;
 
+	Com_Memset( &texMods, 0, sizeof( texMods ) );
 	for ( i = 0 ; i < MAX_SHADER_STAGES ; i++ ) {
-		stages[i].bundle[0].texMods = texMods[i];
+		int j;
+		for ( j = 0 ; j < NUM_TEXTURE_BUNDLES ; j++ ) {
+			stages[i].bundle[j].texMods = texMods[i][j];
+		}
 
 		// default normal/specular
 		VectorSet4(stages[i].normalScale, 0.0f, 0.0f, 0.0f, 0.0f);
@@ -3737,6 +4082,9 @@ static shader_t *FinishShader( void ) {
 	//
 	// set sky stuff appropriate
 	//
+	if ( shader.isPortalSky ) {
+		shader.sort = SS_PORTALSKY;
+	}
 	if ( shader.isSky ) {
 		shader.sort = SS_ENVIRONMENT;
 	}
@@ -3747,6 +4095,11 @@ static shader_t *FinishShader( void ) {
 	if ( shader.polygonOffset && !shader.sort ) {
 		shader.sort = SS_DECAL;
 	}
+
+	shader.needsLGrid = qfalse;
+	shader.needsLSpherical = qfalse;
+	shader.needsCpuColors = qfalse;
+	shader.needsStaticCpuColors = qfalse;
 
 	//
 	// set appropriate stage information
@@ -3764,6 +4117,43 @@ static shader_t *FinishShader( void ) {
 			pStage->active = qfalse;
 			stage++;
 			continue;
+		}
+
+		switch ( pStage->rgbGen ) {
+		case CGEN_LIGHTING_GRID:
+			shader.needsLGrid = qtrue;
+			break;
+		case CGEN_LIGHTING_SPHERICAL:
+		case CGEN_STATIC:
+			shader.needsLSpherical = qtrue;
+			shader.needsCpuColors = qtrue;
+			break;
+		case CGEN_DOT:
+		case CGEN_ONE_MINUS_DOT:
+		case CGEN_SCOORD:
+		case CGEN_TCOORD:
+			shader.needsCpuColors = qtrue;
+			shader.needsStaticCpuColors = qtrue;
+			break;
+		default:
+			break;
+		}
+
+		switch ( pStage->alphaGen ) {
+		case AGEN_DIST_FADE:
+		case AGEN_ONE_MINUS_DIST_FADE:
+		case AGEN_DOT:
+		case AGEN_ONE_MINUS_DOT:
+		case AGEN_DOT_VIEW:
+		case AGEN_ONE_MINUS_DOT_VIEW:
+		case AGEN_HEIGHT_FADE:
+		case AGEN_SCOORD:
+		case AGEN_TCOORD:
+			shader.needsCpuColors = qtrue;
+			shader.needsStaticCpuColors = qtrue;
+			break;
+		default:
+			break;
 		}
 
 		//
@@ -3803,6 +4193,19 @@ static shader_t *FinishShader( void ) {
 		} else {
 			if ( pStage->bundle[0].tcGen == TCGEN_BAD ) {
 				pStage->bundle[0].tcGen = TCGEN_TEXTURE;
+			}
+		}
+
+		if ( pStage->bundle[1].image[0] ) {
+			if ( pStage->bundle[1].isLightmap ) {
+				if ( pStage->bundle[1].tcGen == TCGEN_BAD ) {
+					pStage->bundle[1].tcGen = TCGEN_LIGHTMAP;
+				}
+				hasLightmapStage = qtrue;
+			} else {
+				if ( pStage->bundle[1].tcGen == TCGEN_BAD ) {
+					pStage->bundle[1].tcGen = TCGEN_TEXTURE;
+				}
 			}
 		}
 
@@ -3907,6 +4310,477 @@ static shader_t *FinishShader( void ) {
 
 	// determine which vertex attributes this shader needs
 	ComputeVertexAttribs();
+
+	// Classify per-pixel model material profile for MOHAA spherical-lit shaders.
+	// modelMaterial  = (matteSpec, metalSpec - matteSpec, matteFresnel, metalFresnel - matteFresnel)
+	// modelMaterial2 = (matteShinScale, metalShinScale - matteShinScale, metalTintMix, bumpStrength)
+	if ( shader.needsLSpherical ) {
+		const char *sname = shader.name;
+		const char *iname = ( stage > 0 && stages[0].bundle[0].image[0] ) ? stages[0].bundle[0].image[0]->imgName : "";
+
+		if ( Q_stristr( iname, "weapons/" ) || Q_stristr( sname, "weapon" )
+			|| Q_stristr( sname, "garand" ) || Q_stristr( sname, "thompson" )
+			|| Q_stristr( sname, "colt" ) || Q_stristr( sname, "mp40" )
+			|| Q_stristr( sname, "mp44" ) || Q_stristr( sname, "kar98" )
+			|| Q_stristr( sname, "springfield" ) || Q_stristr( sname, "bar" )
+			|| Q_stristr( sname, "30cal" ) || Q_stristr( sname, "mg42" )
+			|| Q_stristr( sname, "p38" ) || Q_stristr( sname, "shotgun" )
+			|| Q_stristr( sname, "winchester" ) || Q_stristr( sname, "hi_standard" )
+			|| Q_stristr( sname, "bazooka" ) || Q_stristr( sname, "panzerschreck" )
+			|| Q_stristr( sname, "sten" ) || Q_stristr( sname, "enfield" )
+			|| Q_stristr( sname, "flaregun" ) || Q_stristr( sname, "granate" )
+			|| Q_stristr( sname, "grenade" ) || Q_stristr( sname, "scope" )
+			|| Q_stristr( sname, "clip" ) || Q_stristr( sname, "silenced" ) )
+		{
+			// Weapons: crisp oiled gunmetal steel + satin walnut wood (separated per-pixel by saturation)
+			shader.modelMaterialMode = 1;
+			VectorSet4( shader.modelMaterial,  0.10f, 0.55f, 0.05f, 0.35f );
+			VectorSet4( shader.modelMaterial2, 3.50f, 5.00f, 0.55f, 1.55f );
+		}
+		else if ( Q_stristr( sname, "helmet" ) || Q_stristr( iname, "helmet" )
+			|| Q_stristr( sname, "goggle" ) || Q_stristr( iname, "goggle" ) )
+		{
+			// Soldier steel helmets and metal goggles (checked before human/ folder)
+			shader.modelMaterialMode = 2;
+			VectorSet4( shader.modelMaterial,  0.22f, 0.30f, 0.14f, 0.16f );
+			VectorSet4( shader.modelMaterial2, 4.50f, 2.50f, 0.45f, 1.15f );
+		}
+		else if ( Q_stristr( iname, "human/" ) || Q_stristr( iname, "player/" )
+			|| Q_stristr( iname, "faces/" )
+			|| Q_stristr( sname, "hand" ) || Q_stristr( iname, "hand" )
+			|| Q_stristr( sname, "face" ) || Q_stristr( sname, "head" )
+			|| Q_stristr( sname, "hair" ) || Q_stristr( sname, "skin" )
+			|| Q_stristr( sname, "body" ) || Q_stristr( sname, "sleeve" )
+			|| Q_stristr( sname, "uniform" ) || Q_stristr( sname, "pants" )
+			|| Q_stristr( sname, "coat" ) || Q_stristr( sname, "glove" )
+			|| Q_stristr( sname, "boot" ) || Q_stristr( sname, "allied_" )
+			|| Q_stristr( sname, "german_" ) || Q_stristr( sname, "american_" )
+			|| Q_stristr( sname, "ranger" ) || Q_stristr( sname, "airborne" )
+			|| Q_stristr( sname, "manon" ) || Q_stristr( sname, "officer" )
+			|| Q_stristr( sname, "soldier" ) || Q_stristr( sname, "pilot_" )
+			|| Q_stristr( sname, "tred" ) || Q_stristr( sname, "tire" )
+			|| Q_stristr( sname, "wheel" ) || Q_stristr( sname, "canvas" )
+			|| Q_stristr( sname, "tent" ) || Q_stristr( sname, "cloth" )
+			|| Q_stristr( sname, "sandbag" ) || Q_stristr( sname, "crate" )
+			|| Q_stristr( sname, "wood" ) || Q_stristr( sname, "foliage" )
+			|| Q_stristr( sname, "tree" ) || Q_stristr( sname, "leaf" )
+			|| Q_stristr( sname, "bush" ) || Q_stristr( sname, "grass" )
+			|| Q_stristr( sname, "palm" ) )
+		{
+			// Skin, hair, hands, wool uniforms, rubber tires, canvas, foliage: pure matte per-pixel fast path
+			shader.modelMaterialMode = 3;
+			VectorSet4( shader.modelMaterial,  0.0f, 0.0f, 0.0f, 0.0f );
+			VectorSet4( shader.modelMaterial2, 1.0f, 0.0f, 0.0f, 0.0f );
+		}
+		else if ( Q_stristr( iname, "vehicles/" ) || Q_stristr( iname, "statweapons/" )
+			|| Q_stristr( sname, "opel" ) || Q_stristr( sname, "jeep" )
+			|| Q_stristr( sname, "tank" ) || Q_stristr( sname, "tiger" )
+			|| Q_stristr( sname, "sherman" ) || Q_stristr( sname, "halftrack" )
+			|| Q_stristr( sname, "stuka" ) || Q_stristr( sname, "flak" )
+			|| Q_stristr( sname, "cannon" ) || Q_stristr( sname, "searchlight" )
+			|| Q_stristr( sname, "metal" ) || Q_stristr( sname, "gasmask" )
+			|| Q_stristr( sname, "phone" ) || Q_stristr( sname, "radio" )
+			|| Q_stristr( sname, "radar" ) || Q_stristr( sname, "enigma" )
+			|| Q_stristr( sname, "steel" ) || Q_stristr( sname, "brass" )
+			|| Q_stristr( sname, "barrel" ) || Q_stristr( sname, "drum" ) )
+		{
+			// Vehicles, cannons, metal gear: painted steel + bare steel accents
+			shader.modelMaterialMode = 2;
+			VectorSet4( shader.modelMaterial,  0.22f, 0.30f, 0.14f, 0.16f );
+			VectorSet4( shader.modelMaterial2, 4.50f, 2.50f, 0.45f, 1.15f );
+		}
+		else
+		{
+			// Adaptive props (doors, switches, ammo tins, items)
+			shader.modelMaterialMode = 0;
+			VectorSet4( shader.modelMaterial,  0.04f, 0.32f, 0.02f, 0.18f );
+			VectorSet4( shader.modelMaterial2, 3.50f, 3.00f, 0.40f, 0.90f );
+		}
+	}
+
+	// Classify MOHAA water surfaces for the modern water shader (r_modernWater)
+	shader.waterType = 0;
+	shader.waterStage = -1;
+	if ( ( shader.contentFlags & CONTENTS_WATER )
+		&& !( shader.surfaceFlags & SURF_NODRAW )
+		&& !shader.isSky
+		&& !shader.isPortal
+		&& !shader.isPortalSky
+		&& shader.numUnfoggedPasses > 0
+		&& !Q_stristr( shader.name, "nodraw" )
+		&& !Q_stristr( shader.name, "waterskip" )
+		&& !Q_stristr( shader.name, "shoregradient" ) )
+	{
+		int s, bestStage = -1, fallbackStage = -1;
+
+		for ( s = 0; s < shader.numUnfoggedPasses; s++ ) {
+			shaderStage_t *ps = &stages[s];
+			const char *iname;
+			qboolean isAdditive;
+
+			if ( !ps->active || !ps->bundle[0].image[0] ) {
+				continue;
+			}
+			if ( ps->bundle[0].isLightmap || ps->bundle[0].tcGen == TCGEN_LIGHTMAP ) {
+				continue;
+			}
+
+			if ( fallbackStage < 0 ) {
+				fallbackStage = s;
+			}
+
+			iname = ps->bundle[0].image[0]->imgName;
+			if ( Q_stristr( iname, "froth" ) || Q_stristr( iname, "wash" ) ) {
+				continue;
+			}
+
+			isAdditive = ( ( ps->stateBits & GLS_DSTBLEND_BITS ) == GLS_DSTBLEND_ONE );
+			if ( !isAdditive ) {
+				bestStage = s;
+				break;
+			}
+		}
+
+		shader.waterStage = ( bestStage >= 0 ) ? bestStage : fallbackStage;
+		if ( shader.waterStage >= 0 ) {
+			const char *sname = shader.name;
+
+			if ( Q_stristr( sname, "subpen" ) ) {
+				shader.waterType = 4; // indoor U-boat pen / harbor basin
+			} else if ( Q_stristr( sname, "canal" ) || Q_stristr( sname, "sludge" ) || Q_stristr( sname, "swill" ) ) {
+				shader.waterType = 5; // murky canal sludge (additive stage)
+			} else if ( Q_stristr( sname, "pond" ) ) {
+				shader.waterType = 3; // calm pond
+			} else if ( Q_stristr( sname, "river" ) || Q_stristr( sname, "stream" ) || Q_stristr( sname, "frothy" ) ) {
+				shader.waterType = 2; // flowing river / stream
+			} else {
+				shader.waterType = 1; // open ocean / sea / shoreline
+			}
+
+			shader.vertexAttribs |= ATTR_POSITION | ATTR_NORMAL | ATTR_TEXCOORD | ATTR_COLOR;
+			if ( stages[shader.waterStage].bundle[1].isLightmap ) {
+				shader.vertexAttribs |= ATTR_LIGHTCOORD;
+			}
+		}
+	}
+
+	// Classify material-aware world HD micro-relief & surface response (SURF_* flags + name heuristics)
+	// worldRelief = (reliefStrength, specStrength, shininessScale, materialTrait[>0 metalTint, <0 snowGlint])
+	// worldFresnel = grazing-angle rim/wet/metal sheen strength
+	VectorSet4( shader.worldRelief, 0.0f, 0.0f, 5.5f, 0.0f );
+	shader.worldFresnel = 0.0f;
+	if ( !shader.isSky
+		&& !shader.isPortal
+		&& !shader.isPortalSky
+		&& shader.waterType == 0
+		&& !shader.needsLSpherical
+		&& !( shader.surfaceFlags & SURF_NODRAW )
+		&& shader.numUnfoggedPasses > 0 )
+	{
+		const char *sname = shader.name;
+		const char *iname = ( stages[0].active && stages[0].bundle[0].image[0] ) ? stages[0].bundle[0].image[0]->imgName : "";
+		int sf = shader.surfaceFlags;
+
+		if ( Q_stristr( sname, "sky" ) || Q_stristr( sname, "decal" )
+			|| Q_stristr( sname, "fog" ) || Q_stristr( sname, "flare" )
+			|| Q_stristr( sname, "light" ) || Q_stristr( sname, "lamp" )
+			|| Q_stristr( sname, "neon" ) || Q_stristr( sname, "sign" )
+			|| Q_stristr( sname, "poster" ) || Q_stristr( sname, "paint" )
+			|| Q_stristr( sname, "foliage" ) || Q_stristr( sname, "leaf" )
+			|| Q_stristr( sname, "leaves" ) || Q_stristr( sname, "bush" )
+			|| Q_stristr( sname, "vine" ) || Q_stristr( sname, "hedge" )
+			|| ( sf & SURF_FOLIAGE ) )
+		{
+			// Keep lights, decals, signs and foliage crisp and untouched
+			VectorSet4( shader.worldRelief, 0.0f, 0.0f, 5.5f, 0.0f );
+			shader.worldFresnel = 0.0f;
+		}
+		else if ( ( sf & SURF_PUDDLE ) || Q_stristr( sname, "puddle" ) || Q_stristr( iname, "puddle" ) )
+		{
+			// Wet puddles & rain-slick surfaces: tight mirror-like glints + grazing sky reflection
+			VectorSet4( shader.worldRelief, 2.10f, 0.38f, 15.0f, 0.0f );
+			shader.worldFresnel = 0.36f;
+		}
+		else if ( ( sf & SURF_GLASS ) || Q_stristr( sname, "glass" ) || Q_stristr( sname, "window" ) )
+		{
+			// Opaque/tinted building glass & window panes: smooth reflection + crisp Fresnel glint
+			VectorSet4( shader.worldRelief, 0.22f, 0.30f, 15.5f, 0.0f );
+			shader.worldFresnel = 0.26f;
+		}
+		else if ( ( sf & ( SURF_METAL | SURF_GRILL ) )
+			|| Q_stristr( sname, "metal" ) || Q_stristr( iname, "metal" )
+			|| Q_stristr( sname, "steel" ) || Q_stristr( sname, "iron" )
+			|| Q_stristr( sname, "grate" ) || Q_stristr( sname, "pipe" )
+			|| Q_stristr( sname, "corrug" ) || Q_stristr( sname, "plate" )
+			|| Q_stristr( sname, "locker" ) || Q_stristr( sname, "hull" )
+			|| Q_stristr( sname, "sub" ) || Q_stristr( sname, "door" )
+			|| Q_stristr( sname, "rail" ) || Q_stristr( sname, "beam" ) )
+		{
+			// Metal plates, steel doors, pipes, U-boot bulkheads: crisp micro-relief + colored metallic Fresnel
+			VectorSet4( shader.worldRelief, 2.25f, 0.30f, 11.5f, 0.78f );
+			shader.worldFresnel = 0.22f;
+		}
+		else if ( ( sf & SURF_SNOW ) || Q_stristr( sname, "snow" ) || Q_stristr( iname, "snow" )
+			|| Q_stristr( sname, "ice" ) )
+		{
+			// Snow & ice: soft drift relief + sunlit diamond-crystal micro-glints (trait < 0)
+			VectorSet4( shader.worldRelief, 1.45f, 0.14f, 9.5f, -1.0f );
+			shader.worldFresnel = 0.10f;
+		}
+		else if ( Q_stristr( sname, "tile" ) || Q_stristr( sname, "marble" )
+			|| Q_stristr( sname, "cobble" ) || Q_stristr( iname, "cobble" )
+			|| Q_stristr( sname, "pave" ) || Q_stristr( sname, "street" ) )
+		{
+			// Cobblestone, tiles, marble, streets: sculpted stone joints + subtle mineral grazing sheen
+			VectorSet4( shader.worldRelief, 2.55f, 0.18f, 9.2f, 0.0f );
+			shader.worldFresnel = 0.12f;
+		}
+		else if ( ( sf & ( SURF_ROCK | SURF_GRAVEL ) )
+			|| Q_stristr( sname, "brick" ) || Q_stristr( iname, "brick" )
+			|| Q_stristr( sname, "stone" ) || Q_stristr( iname, "stone" )
+			|| Q_stristr( sname, "rock" ) || Q_stristr( sname, "cliff" )
+			|| Q_stristr( sname, "concrete" ) || Q_stristr( iname, "concrete" )
+			|| Q_stristr( sname, "cement" ) || Q_stristr( sname, "bunker" )
+			|| Q_stristr( sname, "wall" ) || Q_stristr( sname, "plaster" )
+			|| Q_stristr( sname, "stucco" ) || Q_stristr( sname, "floor" )
+			|| Q_stristr( sname, "road" ) )
+		{
+			// Masonry, brick, concrete bunkers, gravel, plaster walls: deep tactile relief + subtle edge catch
+			VectorSet4( shader.worldRelief, 2.45f, 0.09f, 7.2f, 0.0f );
+			shader.worldFresnel = 0.05f;
+		}
+		else if ( ( sf & SURF_WOOD )
+			|| Q_stristr( sname, "wood" ) || Q_stristr( iname, "wood" )
+			|| Q_stristr( sname, "plank" ) || Q_stristr( sname, "crate" )
+			|| Q_stristr( sname, "box" ) || Q_stristr( sname, "barrel" )
+			|| Q_stristr( sname, "fence" ) || Q_stristr( sname, "timber" )
+			|| Q_stristr( sname, "roof" ) || Q_stristr( sname, "shingle" ) )
+		{
+			// Wood planks, crates, roofs, timber: warm satin wood-grain relief
+			VectorSet4( shader.worldRelief, 2.15f, 0.10f, 7.6f, 0.18f );
+			shader.worldFresnel = 0.07f;
+		}
+		else if ( ( sf & ( SURF_MUD | SURF_SAND ) )
+			|| Q_stristr( sname, "mud" ) || Q_stristr( sname, "sand" ) || Q_stristr( sname, "beach" ) )
+		{
+			// Shoreline sand & damp mud (Omaha, trenches): natural grain + subtle damp grazing sheen
+			VectorSet4( shader.worldRelief, 1.60f, 0.08f, 8.0f, 0.0f );
+			shader.worldFresnel = 0.09f;
+		}
+		else if ( ( sf & ( SURF_DIRT | SURF_GRASS | SURF_CARPET | SURF_PAPER ) )
+			|| Q_stristr( sname, "dirt" ) || Q_stristr( sname, "grass" )
+			|| Q_stristr( sname, "ground" ) || Q_stristr( sname, "terrain" )
+			|| Q_stristr( sname, "cloth" ) || Q_stristr( sname, "carpet" )
+			|| Q_stristr( sname, "rug" ) || Q_stristr( sname, "bark" )
+			|| Q_stristr( sname, "canvas" ) )
+		{
+			// Matte natural surfaces (dirt, grass, cloth, carpet): subtle tactile relief, purely matte
+			VectorSet4( shader.worldRelief, 1.45f, 0.0f, 6.5f, 0.0f );
+			shader.worldFresnel = 0.0f;
+		}
+		else
+		{
+			// Default architectural world texture: balanced micro-relief + very subtle sheen
+			VectorSet4( shader.worldRelief, 1.95f, 0.07f, 7.4f, 0.0f );
+			shader.worldFresnel = 0.04f;
+		}
+	}
+
+	// Classify volumetric soft particles (smoke, fire, explosions, dust, spray billboards)
+	shader.softParticle = 0.0f;
+	if ( shader.sort > SS_OPAQUE
+		&& !shader.isSky
+		&& !shader.isPortal
+		&& !shader.isPortalSky
+		&& !shader.polygonOffset
+		&& shader.waterType == 0
+		&& !( shader.surfaceFlags & SURF_NODRAW )
+		&& shader.numUnfoggedPasses > 0
+		&& stages[0].active
+		&& ( stages[0].stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS ) )
+		&& !( stages[0].stateBits & ( GLS_DEPTHMASK_TRUE | GLS_ATEST_BITS ) ) )
+	{
+		qboolean isBillboard = qfalse;
+		qboolean isLightGlow = qfalse;
+		int d;
+
+		if ( shader.sprite.scale > 0.0f && shader.sprite.type != SPRITE_ORIENTED ) {
+			isBillboard = qtrue;
+		}
+		for ( d = 0; d < shader.numDeforms; d++ ) {
+			if ( shader.deforms[d].deformation == DEFORM_AUTOSPRITE
+				|| shader.deforms[d].deformation == DEFORM_AUTOSPRITE2 ) {
+				isBillboard = qtrue;
+			} else if ( shader.deforms[d].deformation == DEFORM_LIGHTGLOW ) {
+				isLightGlow = qtrue;
+			}
+		}
+
+		if ( isBillboard ) {
+			const char *sname = shader.name;
+			qboolean excluded = (
+				Q_stristr( sname, "crosshair" ) || Q_stristr( sname, "corona" )
+				|| Q_stristr( sname, "hud" ) || Q_stristr( sname, "menu" )
+				|| Q_stristr( sname, "font" ) || Q_stristr( sname, "icon" )
+				|| Q_stristr( sname, "rain" ) || Q_stristr( sname, "snow" )
+				|| Q_stristr( sname, "drip" ) || Q_stristr( sname, "seagull" )
+				|| Q_stristr( sname, "bird" ) || Q_stristr( sname, "shard" )
+				|| Q_stristr( sname, "splinter" ) || Q_stristr( sname, "piece" )
+				|| Q_stristr( sname, "shell" ) || Q_stristr( sname, "beam" )
+				|| Q_stristr( sname, "spark" ) || Q_stristr( sname, "ring" )
+				|| Q_stristr( sname, "wake" ) || Q_stristr( sname, "bubble" )
+				|| Q_stristr( sname, "blood" ) || Q_stristr( sname, "eye" )
+				|| Q_stristr( sname, "radar" ) || Q_stristr( sname, "compass" )
+				|| Q_stristr( sname, "flare" ) || Q_stristr( sname, "sun" )
+				|| Q_stristr( sname, "lens" ) || Q_stristr( sname, "firefly" ) );
+			qboolean isVolumetric = (
+				Q_stristr( sname, "smoke" ) || Q_stristr( sname, "vss" )
+				|| Q_stristr( sname, "expl" ) || Q_stristr( sname, "boom" )
+				|| Q_stristr( sname, "blast" ) || Q_stristr( sname, "blst" )
+				|| Q_stristr( sname, "cloud" ) || Q_stristr( sname, "plume" )
+				|| Q_stristr( sname, "dust" ) || Q_stristr( sname, "steam" )
+				|| Q_stristr( sname, "bang" ) );
+
+			if ( !excluded && ( !isLightGlow || isVolumetric || Q_stristr( sname, "flame" ) || Q_stristr( sname, "fire" ) ) ) {
+				if ( isVolumetric ) {
+					shader.softParticle = 26.0f;
+				} else if ( Q_stristr( sname, "puff" ) || Q_stristr( sname, "flame" )
+					|| Q_stristr( sname, "fire" ) || Q_stristr( sname, "spray" )
+					|| Q_stristr( sname, "flash" ) || Q_stristr( sname, "muz" )
+					|| Q_stristr( sname, "sand" ) || Q_stristr( sname, "dirt" )
+					|| Q_stristr( sname, "water" ) ) {
+					shader.softParticle = 16.0f;
+				} else {
+					shader.softParticle = 18.0f;
+				}
+			}
+		}
+	}
+
+	// Classify GPU vertex wind (foliage canopies/bushes & hanging flags/banners)
+	// Runs purely on GPU vertex shader — preserves fast static-model VAO with ~0 ms cost!
+	shader.windType = 0;
+	if ( !shader.isSky
+		&& !shader.isPortal
+		&& !shader.isPortalSky
+		&& !shader.polygonOffset
+		&& shader.waterType == 0
+		&& !( shader.surfaceFlags & SURF_NODRAW )
+		&& shader.numUnfoggedPasses > 0
+		&& stages[0].active )
+	{
+		const char *sname = shader.name;
+		const char *tname = ( stages[0].bundle[TB_DIFFUSEMAP].image[0] )
+			? stages[0].bundle[TB_DIFFUSEMAP].image[0]->imgName : "";
+		qboolean isUiOrHud = (
+			Q_stristr( sname, "textures/hud/" ) || Q_stristr( sname, "textures/menu/" )
+			|| Q_stristr( sname, "textures/mohmenu/" ) || Q_stristr( sname, "fonts/" )
+			|| Q_stristr( sname, "gfx/" ) || Q_stristr( sname, "sprites/" ) );
+
+		if ( !isUiOrHud ) {
+			qboolean isFlag = (
+				( Q_stristr( sname, "flag" ) || Q_stristr( sname, "banner" )
+				  || Q_stristr( sname, "pennant" ) || Q_stristr( sname, "curtain" )
+				  || Q_stristr( tname, "flags/" ) || Q_stristr( tname, "banner" ) )
+				&& !Q_stristr( sname, "flagtop" ) && !Q_stristr( sname, "pole" )
+				&& !Q_stristr( sname, "post" ) && !Q_stristr( sname, "base" )
+				&& !Q_stristr( sname, "stand" ) && !Q_stristr( sname, "rope" )
+				&& !Q_stristr( sname, "eagle" ) && !Q_stristr( sname, "shadow" )
+				&& !Q_stristr( sname, "icon" ) && !Q_stristr( sname, "medal" ) );
+
+			if ( isFlag ) {
+				shader.windType = 2;
+			} else {
+				qboolean hasCutoutOrDouble = (
+					shader.cullType == CT_TWO_SIDED
+					|| ( stages[0].stateBits & GLS_ATEST_BITS )
+					|| ( shader.surfaceFlags & SURF_FOLIAGE ) );
+				qboolean isFoliageName = (
+					Q_stristr( sname, "pine" ) || Q_stristr( sname, "tree" )
+					|| Q_stristr( sname, "bush" ) || Q_stristr( sname, "hedge" )
+					|| Q_stristr( sname, "leaf" ) || Q_stristr( sname, "leaves" )
+					|| Q_stristr( sname, "branch" ) || Q_stristr( sname, "foliage" )
+					|| Q_stristr( sname, "fern" ) || Q_stristr( sname, "ivy" )
+					|| Q_stristr( sname, "weed" ) || Q_stristr( sname, "shrub" )
+					|| Q_stristr( sname, "vine" ) || Q_stristr( sname, "palm" )
+					|| Q_stristr( sname, "wheat" ) || Q_stristr( sname, "reed" )
+					|| Q_stristr( sname, "canopy" ) || Q_stristr( sname, "bough" )
+					|| Q_stristr( sname, "cypress" ) || Q_stristr( sname, "oak" )
+					|| Q_stristr( sname, "birch" ) || Q_stristr( sname, "willow" )
+					|| Q_stristr( sname, "poplar" ) || Q_stristr( sname, "plant" )
+					|| Q_stristr( tname, "natural/" ) || Q_stristr( tname, "foliage" )
+					|| Q_stristr( tname, "leaves" ) || Q_stristr( tname, "branch" ) );
+				qboolean isTrunkOrSolid = (
+					Q_stristr( sname, "bark" ) || Q_stristr( sname, "trunk" )
+					|| Q_stristr( sname, "stump" ) || Q_stristr( sname, "log" )
+					|| Q_stristr( sname, "plank" ) || Q_stristr( sname, "board" )
+					|| Q_stristr( sname, "wood" ) || Q_stristr( sname, "shadow" )
+					|| Q_stristr( sname, "ground" ) || Q_stristr( sname, "terrain" )
+					|| Q_stristr( sname, "dirt" ) || Q_stristr( sname, "wall" )
+					|| Q_stristr( sname, "roof" ) || Q_stristr( sname, "crate" )
+					|| Q_stristr( sname, "fence" ) || Q_stristr( sname, "gate" )
+					|| Q_stristr( sname, "post" ) || Q_stristr( sname, "pole" )
+					|| Q_stristr( sname, "sign" ) || Q_stristr( sname, "weapon" )
+					|| Q_stristr( sname, "gun" ) || Q_stristr( sname, "decal" )
+					|| Q_stristr( tname, "bark" ) || Q_stristr( tname, "trunk" ) );
+
+				if ( hasCutoutOrDouble && ( ( shader.surfaceFlags & SURF_FOLIAGE ) || isFoliageName ) && !isTrunkOrSolid ) {
+					shader.windType = 1;
+				}
+			}
+		}
+	}
+
+	// Classify warm emissive light/window/lantern/fire stages (0 ms GPU cost; shines with Filmic & Bloom)
+	for ( stage = 0; stage < MAX_SHADER_STAGES; stage++ ) {
+		shaderStage_t *pStage = &stages[stage];
+		pStage->isEmissiveGlow = 0;
+		if ( !pStage->active ) {
+			break;
+		}
+		if ( shader.isSky || shader.isPortal || shader.isPortalSky || shader.waterType != 0 ) {
+			continue;
+		}
+		{
+			const char *sname = shader.name;
+			const char *tname = ( pStage->bundle[TB_DIFFUSEMAP].image[0] )
+				? pStage->bundle[TB_DIFFUSEMAP].image[0]->imgName : "";
+			unsigned int srcBlend = pStage->stateBits & GLS_SRCBLEND_BITS;
+			unsigned int dstBlend = pStage->stateBits & GLS_DSTBLEND_BITS;
+			qboolean isUiOrHud = (
+				Q_stristr( sname, "textures/hud/" ) || Q_stristr( sname, "textures/menu/" )
+				|| Q_stristr( sname, "textures/mohmenu/" ) || Q_stristr( sname, "fonts/" )
+				|| Q_stristr( sname, "gfx/2d/" ) || Q_stristr( sname, "crosshair" ) );
+
+			if ( isUiOrHud ) {
+				continue;
+			}
+
+			qboolean isAdditive = (
+				( srcBlend == GLS_SRCBLEND_ONE && dstBlend == GLS_DSTBLEND_ONE )
+				|| ( srcBlend == GLS_SRCBLEND_SRC_ALPHA && dstBlend == GLS_DSTBLEND_ONE ) );
+			qboolean isGlowName = (
+				Q_stristr( sname, "textures/light/" ) || Q_stristr( tname, "textures/light/" )
+				|| Q_stristr( sname, "lit" ) || Q_stristr( tname, "_blend" )
+				|| Q_stristr( sname, "lamp" ) || Q_stristr( sname, "lantern" )
+				|| Q_stristr( sname, "glow" ) || Q_stristr( sname, "bulb" )
+				|| Q_stristr( sname, "candle" ) || Q_stristr( sname, "torch" )
+				|| Q_stristr( sname, "fire" ) || Q_stristr( sname, "flame" )
+				|| Q_stristr( sname, "ember" ) || Q_stristr( sname, "headlight" )
+				|| Q_stristr( sname, "spotlight" ) || Q_stristr( sname, "searchlight" )
+				|| Q_stristr( sname, "beacon" ) || Q_stristr( sname, "spark" ) );
+
+			if ( isAdditive && isGlowName ) {
+				pStage->isEmissiveGlow = 2;
+			} else if ( !hasLightmapStage && srcBlend == 0 && dstBlend == 0
+				&& ( pStage->rgbGen == CGEN_IDENTITY || pStage->rgbGen == CGEN_IDENTITY_LIGHTING )
+				&& ( Q_stristr( sname, "textures/light/" ) || Q_stristr( sname, "lit" )
+				     || Q_stristr( sname, "lamp" ) || Q_stristr( sname, "lantern" )
+				     || Q_stristr( sname, "bulb" ) ) ) {
+				pStage->isEmissiveGlow = 1;
+			}
+		}
+	}
 
 	return GeneratePermanentShader();
 }
@@ -4140,7 +5014,7 @@ shader_t *R_FindShaderEx( const char *name, int lightmapIndex, qboolean mipRawIm
 		// dynamic colors at vertexes
 		stages[0].bundle[0].image[0] = image;
 		stages[0].active = qtrue;
-		stages[0].rgbGen = CGEN_LIGHTING_DIFFUSE;
+		stages[0].rgbGen = CGEN_LIGHTING_GRID;
 		stages[0].stateBits = GLS_DEFAULT;
 	} else if ( shader.lightmapIndex == LIGHTMAP_BY_VERTEX ) {
 		// explicit colors at vertexes
@@ -4153,8 +5027,8 @@ shader_t *R_FindShaderEx( const char *name, int lightmapIndex, qboolean mipRawIm
 		// GUI elements
 		stages[0].bundle[0].image[0] = image;
 		stages[0].active = qtrue;
-		stages[0].rgbGen = CGEN_VERTEX;
-		stages[0].alphaGen = AGEN_VERTEX;
+		stages[0].rgbGen = CGEN_GLOBAL_COLOR;
+		stages[0].alphaGen = AGEN_GLOBAL_ALPHA;
 		stages[0].stateBits = GLS_DEPTHTEST_DISABLE |
 			  GLS_SRCBLEND_SRC_ALPHA |
 			  GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
@@ -4226,7 +5100,7 @@ qhandle_t RE_RegisterShaderFromImage(const char *name, int lightmapIndex, image_
 		// dynamic colors at vertexes
 		stages[0].bundle[0].image[0] = image;
 		stages[0].active = qtrue;
-		stages[0].rgbGen = CGEN_LIGHTING_DIFFUSE;
+		stages[0].rgbGen = CGEN_LIGHTING_GRID;
 		stages[0].stateBits = GLS_DEFAULT;
 	} else if ( shader.lightmapIndex == LIGHTMAP_BY_VERTEX ) {
 		// explicit colors at vertexes
@@ -4239,8 +5113,8 @@ qhandle_t RE_RegisterShaderFromImage(const char *name, int lightmapIndex, image_
 		// GUI elements
 		stages[0].bundle[0].image[0] = image;
 		stages[0].active = qtrue;
-		stages[0].rgbGen = CGEN_VERTEX;
-		stages[0].alphaGen = AGEN_VERTEX;
+		stages[0].rgbGen = CGEN_GLOBAL_COLOR;
+		stages[0].alphaGen = AGEN_GLOBAL_ALPHA;
 		stages[0].stateBits = GLS_DEPTHTEST_DISABLE |
 			  GLS_SRCBLEND_SRC_ALPHA |
 			  GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
@@ -4697,6 +5571,41 @@ void R_InitShaders( void ) {
 	ScanAndLoadShaderFiles();
 
 	CreateExternalShaders();
+}
+
+void R_InvalidateLightmapShaders( void ) {
+	int i, s, b;
+
+	for ( i = 0; i < FILE_HASH_SIZE; i++ ) {
+		shader_t **pp = &hashTable[i];
+		while ( *pp ) {
+			if ( (*pp)->lightmapIndex >= 0 ) {
+				*pp = (*pp)->next;
+			} else {
+				pp = &(*pp)->next;
+			}
+		}
+	}
+
+	for ( i = 0; i < tr.numShaders; i++ ) {
+		shader_t *sh = tr.shaders[i];
+		if ( !sh || sh->lightmapIndex < 0 ) {
+			continue;
+		}
+		for ( s = 0; s < MAX_SHADER_STAGES; s++ ) {
+			shaderStage_t *st = sh->stages[s];
+			if ( !st ) {
+				break;
+			}
+			for ( b = 0; b < NUM_TEXTURE_BUNDLES; b++ ) {
+				if ( st->bundle[b].isLightmap || b == TB_DELUXEMAP ) {
+					if ( st->bundle[b].image[0] ) {
+						st->bundle[b].image[0] = tr.whiteImage;
+					}
+				}
+			}
+		}
+	}
 }
 
 //

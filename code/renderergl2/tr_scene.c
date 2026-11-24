@@ -250,6 +250,10 @@ void RE_AddRefEntityToScene( const refEntity_t *ent ) {
 
 	backEndData->entities[r_numentities].e = *ent;
 	backEndData->entities[r_numentities].lightingCalculated = qfalse;
+	backEndData->entities[r_numentities].bLightGridCalculated = qfalse;
+	backEndData->entities[r_numentities].sphereCalculated = qfalse;
+	backEndData->entities[r_numentities].skelCached = qfalse;
+	backEndData->entities[r_numentities].e.parentEntity = ENTITYNUM_NONE;
 
 	CrossProduct(ent->axis[0], ent->axis[1], cross);
 	backEndData->entities[r_numentities].mirrored = (DotProduct(ent->axis[2], cross) < 0.f);
@@ -264,7 +268,7 @@ RE_AddDynamicLightToScene
 
 =====================
 */
-void RE_AddDynamicLightToScene( const vec3_t org, float intensity, float r, float g, float b, int additive ) {
+void RE_AddDynamicLightToScene( const vec3_t org, float intensity, float r, float g, float b, int type ) {
 	dlight_t	*dl;
 
 	if ( !tr.registered ) {
@@ -286,7 +290,8 @@ void RE_AddDynamicLightToScene( const vec3_t org, float intensity, float r, floa
 	dl->color[0] = r;
 	dl->color[1] = g;
 	dl->color[2] = b;
-	dl->additive = additive;
+	dl->type = (dlighttype_t)type;
+	dl->additive = (type & additive) ? qtrue : qfalse;
 }
 
 /*
@@ -296,7 +301,7 @@ RE_AddLightToScene
 =====================
 */
 void RE_AddLightToScene( const vec3_t org, float intensity, float r, float g, float b ) {
-	RE_AddDynamicLightToScene( org, intensity, r, g, b, qfalse );
+	RE_AddDynamicLightToScene( org, intensity, r, g, b, 0 );
 }
 
 /*
@@ -306,7 +311,7 @@ RE_AddAdditiveLightToScene
 =====================
 */
 void RE_AddAdditiveLightToScene( const vec3_t org, float intensity, float r, float g, float b ) {
-	RE_AddDynamicLightToScene( org, intensity, r, g, b, qtrue );
+	RE_AddDynamicLightToScene( org, intensity, r, g, b, additive );
 }
 
 
@@ -328,6 +333,7 @@ void RE_BeginScene(const refdef_t *fd)
 
 	tr.refdef.time = fd->time;
 	tr.refdef.rdflags = fd->rdflags;
+	tr.refdef.piSunShadowActive = qfalse;
 
 	// copy the areamask data over and note if it has changed, which
 	// will force a reset of the visible leafs even if the view hasn't moved
@@ -580,6 +586,14 @@ void RE_RenderScene( const refdef_t *fd ) {
 		}
 	}
 
+	if (glRefConfig.framebufferObject
+		&& tr.piSunShadowFbo
+		&& r_dynamicSunShadows && r_dynamicSunShadows->integer > 0
+		&& !(fd->rdflags & (RDF_NOWORLDMODEL | RDF_HUD)))
+	{
+		R_RenderPiSunShadowMap(fd);
+	}
+
 	// playing with cube maps
 	// this is where dynamic cubemaps would be rendered
 	if (0) //(glRefConfig.framebufferObject && !( fd->rdflags & RDF_NOWORLDMODEL ))
@@ -606,6 +620,58 @@ void RE_RenderScene( const refdef_t *fd ) {
 	parms.viewportY = glConfig.vidHeight - ( tr.refdef.y + tr.refdef.height );
 	parms.viewportWidth = tr.refdef.width;
 	parms.viewportHeight = tr.refdef.height;
+	if ( !( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_HUD ) ) && RB_WantOffscreen3D() )
+	{
+		float maxScale = r_renderScale ? Com_Clamp( 0.5f, 1.0f, r_renderScale->value ) : 1.0f;
+		float scale    = maxScale;
+
+		if ( r_dynamicResolution && r_dynamicResolution->integer > 0 )
+		{
+			float minScale = r_dynamicResolutionMin ? Com_Clamp( 0.5f, maxScale, r_dynamicResolutionMin->value ) : Com_Clamp( 0.5f, maxScale, 0.72f );
+			float targetFps = r_dynamicResolutionTarget ? Com_Clamp( 24.0f, 120.0f, r_dynamicResolutionTarget->value ) : 45.0f;
+			float targetMs = 1000.0f / targetFps;
+			int nowMs = ri.Milliseconds();
+
+			if ( tr.drsScale < minScale || tr.drsScale > maxScale ) {
+				tr.drsScale = maxScale;
+			}
+
+			if ( tr.drsLastMs > 0 ) {
+				int dt = nowMs - tr.drsLastMs;
+				if ( dt > 0 && dt < 200 ) {
+					if ( tr.drsEmaMs <= 0.1f ) {
+						tr.drsEmaMs = (float)dt;
+					} else {
+						tr.drsEmaMs = tr.drsEmaMs * 0.88f + (float)dt * 0.12f;
+					}
+
+					if ( tr.drsEmaMs > targetMs * 1.07f && ( nowMs - tr.drsLastAdjustMs ) >= 140 ) {
+						float err  = ( tr.drsEmaMs - targetMs ) / targetMs;
+						float step = Com_Clamp( 0.02f, 0.06f, err * 0.12f );
+						tr.drsScale = Com_Clamp( minScale, maxScale, tr.drsScale - step );
+						tr.drsLastAdjustMs = nowMs;
+					} else if ( tr.drsEmaMs < targetMs * 0.86f && ( nowMs - tr.drsLastAdjustMs ) >= 320 ) {
+						tr.drsScale = Com_Clamp( minScale, maxScale, tr.drsScale + 0.02f );
+						tr.drsLastAdjustMs = nowMs;
+					}
+				}
+			}
+			tr.drsLastMs = nowMs;
+			scale = tr.drsScale;
+		}
+		else
+		{
+			tr.drsScale = maxScale;
+		}
+
+		if ( scale < 0.999f )
+		{
+			int w = ( (int)( tr.refdef.width  * scale + 8.0f ) ) & ~15;
+			int h = ( (int)( tr.refdef.height * scale + 8.0f ) ) & ~15;
+			parms.viewportWidth  = Com_Clamp( 64, tr.refdef.width,  w );
+			parms.viewportHeight = Com_Clamp( 64, tr.refdef.height, h );
+		}
+	}
 	parms.isPortal = qfalse;
 
 	parms.fovX = tr.refdef.fov_x;
@@ -708,7 +774,7 @@ RE_AddLightToScene2
 =====================
 */
 void RE_AddLightToScene2(const vec3_t org, float intensity, float r, float g, float b, int type) {
-    RE_AddDynamicLightToScene(org, intensity, r, g, b, qfalse);
+    RE_AddDynamicLightToScene(org, intensity, r, g, b, type);
 }
 
 
@@ -719,7 +785,24 @@ RE_AddRefEntityToScene2
 =====================
 */
 void RE_AddRefEntityToScene2( const refEntity_t *ent, int parentEntityNumber ) {
+	int idx = r_numentities;
 	RE_AddRefEntityToScene(ent);
+	if (r_numentities > idx) {
+		if (parentEntityNumber != ENTITYNUM_NONE) {
+			int i;
+			for (i = r_firstSceneEntity; i < idx; i++) {
+				if (backEndData->entities[i].e.entityNumber == parentEntityNumber) {
+					backEndData->entities[idx].e.parentEntity = i - r_firstSceneEntity;
+					break;
+				}
+			}
+			if (i == idx) {
+				backEndData->entities[idx].e.parentEntity = ENTITYNUM_NONE;
+			}
+		} else {
+			backEndData->entities[idx].e.parentEntity = ENTITYNUM_NONE;
+		}
+	}
 }
 
 void RE_AddRefSpriteToScene(const refEntity_t* ent) {

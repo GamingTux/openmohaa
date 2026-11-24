@@ -22,6 +22,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 #include "tr_fbo.h"
 #include "tr_dsa.h"
+#include "../renderercommon/tr_threadpool.h"
+#include <time.h>
+
+static int64_t R_NowUsec( void ) {
+	struct timespec ts;
+	clock_gettime( CLOCK_MONOTONIC, &ts );
+	return (int64_t)ts.tv_sec * 1000000LL + (int64_t)( ts.tv_nsec / 1000 );
+}
 
 backEndData_t	*backEndData;
 backEndState_t	backEnd;
@@ -323,6 +331,53 @@ static void SetViewportAndScissor( void ) {
 
 /*
 =================
+RB_WantOffscreen3D / RB_UseDirectScreenPost / RB_Get2DFbo
+
+Pi 5 / TBDR bandwidth optimization:
+- When all post-processing & render-scaling are disabled (and no HDR/MSAA/greyscale),
+  3D and 2D render directly to FBO 0 (screen) with zero offscreen FBO overhead.
+- When modern post-processing (Bloom, Filmic Tonemap, Render-Scale) is enabled without
+  HDR/MSAA/legacy postProcess/greyscale, 3D renders to tr.renderFbo, RB_PostProcess
+  composites directly into FBO 0 (discarding 3D depth on-chip), and 2D HUD draws directly
+  into FBO 0 in the same TBDR tile pass with zero intermediate scratch/present blits.
+=================
+*/
+qboolean RB_WantOffscreen3D( void ) {
+	if ( !glRefConfig.framebufferObject || !tr.renderFbo ) {
+		return qfalse;
+	}
+	if ( r_hdr->integer || tr.msaaResolveFbo || r_postProcess->integer
+		|| (r_greyscale && r_greyscale->value > 0.0f)
+		|| (r_bloom && r_bloom->integer > 0)
+		|| (((r_filmicTonemap && r_filmicTonemap->integer > 0)
+			|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0))
+			&& !(glRefConfig.framebufferFetch && tr.postFxShader[4].program))
+		|| (r_sharpen && r_sharpen->integer > 0)
+		|| (r_dynamicResolution && r_dynamicResolution->integer > 0)
+		|| (r_renderScale && r_renderScale->value < 0.999f) )
+	{
+		return qtrue;
+	}
+	return qfalse;
+}
+
+qboolean RB_UseDirectScreenPost( void ) {
+	return (!r_hdr->integer && !tr.msaaResolveFbo && !r_postProcess->integer
+		&& !(r_greyscale && r_greyscale->value > 0.0f));
+}
+
+FBO_t *RB_Get2DFbo( void ) {
+	if ( !glRefConfig.framebufferObject ) {
+		return NULL;
+	}
+	if ( RB_UseDirectScreenPost() ) {
+		return NULL;
+	}
+	return tr.renderFbo;
+}
+
+/*
+=================
 RB_BeginDrawingView
 
 Any mirrored or portaled views have already been drawn, so prepare
@@ -350,7 +405,12 @@ void RB_BeginDrawingView (void) {
 		FBO_t *fbo = backEnd.viewParms.targetFbo;
 
 		if (fbo == NULL)
-			fbo = tr.renderFbo;
+		{
+			if (!(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) && RB_WantOffscreen3D())
+				fbo = tr.renderFbo;
+			else
+				fbo = RB_Get2DFbo();
+		}
 
 		if (tr.renderCubeFbo && fbo == tr.renderCubeFbo)
 		{
@@ -371,22 +431,104 @@ void RB_BeginDrawingView (void) {
 	// clear relevant buffers
 	clearBits = GL_DEPTH_BUFFER_BIT;
 
-	if ( r_measureOverdraw->integer || r_shadows->integer == 2 )
+	if ( ( r_measureOverdraw->integer || r_shadows->integer == 2 )
+		&& !( backEnd.viewParms.flags & VPF_DEPTHSHADOW ) )
 	{
 		clearBits |= GL_STENCIL_BUFFER_BIT;
 	}
-	if ( r_fastsky->integer && !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) )
+	if ( !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) && !( backEnd.viewParms.flags & VPF_DEPTHSHADOW ) )
 	{
-		clearBits |= GL_COLOR_BUFFER_BIT;	// FIXME: only if sky shaders have been used
+		if ( (backEnd.viewParms.farplane_distance && !tr.skyRendered && !tr.portalRendered) || tr.farclip )
+		{
+			clearBits |= GL_COLOR_BUFFER_BIT;
+			qglClearColor(
+				backEnd.viewParms.farplane_color[0] * tr.identityLight,
+				backEnd.viewParms.farplane_color[1] * tr.identityLight,
+				backEnd.viewParms.farplane_color[2] * tr.identityLight,
+				1.0f );
+		}
+		else if ( r_fastsky->integer )
+		{
+			clearBits |= GL_COLOR_BUFFER_BIT;
+			qglClearColor( 0.5f, 0.5f, 1.0f, 1.0f );
+		}
 	}
 
 	// clear to black for cube maps
 	if (tr.renderCubeFbo && backEnd.viewParms.targetFbo == tr.renderCubeFbo)
 	{
 		clearBits |= GL_COLOR_BUFFER_BIT;
+		qglClearColor( 0.0f, 0.0f, 0.0f, 1.0f );
 	}
 
-	qglClear( clearBits );
+	// First 3D view into tr.renderFbo this frame: always do a full-surface color+depth clear
+	// so TBDR GPUs skip loading previous frame's tiles from RAM (while preserving sky/mirror
+	// portals rendered earlier in the same frame!).
+	if ( glRefConfig.framebufferObject && tr.renderFbo && glState.currentFBO == tr.renderFbo
+		&& !backEnd.renderFboCleared && !( backEnd.viewParms.flags & VPF_DEPTHSHADOW ) )
+	{
+		backEnd.renderFboCleared = qtrue;
+		if ( !( clearBits & GL_COLOR_BUFFER_BIT ) )
+		{
+			clearBits |= GL_COLOR_BUFFER_BIT;
+			qglClearColor( 0.0f, 0.0f, 0.0f, 1.0f );
+		}
+		if ( backEnd.viewParms.viewportX != 0 || backEnd.viewParms.viewportY != 0
+			|| backEnd.viewParms.viewportWidth != tr.renderFbo->width
+			|| backEnd.viewParms.viewportHeight != tr.renderFbo->height )
+		{
+			if ( glRefConfig.invalidateFramebuffer )
+			{
+				// Discard entire FBO on-chip, then clear ONLY the active scissored DRS sub-rect
+				// so VideoCore VII skips clearing & writing unused border tiles (~4 MB/frame saved!).
+				const GLenum atts[2] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+				qglInvalidateFramebuffer_ext( GL_FRAMEBUFFER, 2, atts );
+				qglClear( clearBits );
+			}
+			else
+			{
+				qglScissor( 0, 0, tr.renderFbo->width, tr.renderFbo->height );
+				qglClear( clearBits );
+				qglScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY,
+					backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
+			}
+			clearBits = 0;
+		}
+	}
+
+	if ( glRefConfig.framebufferObject && tr.piSunShadowFbo && glState.currentFBO == tr.piSunShadowFbo
+		&& ( backEnd.viewParms.flags & VPF_PISUNSHADOW ) && clearBits )
+	{
+		if ( backEnd.viewParms.viewportWidth != tr.piSunShadowFbo->width
+			|| backEnd.viewParms.viewportHeight != tr.piSunShadowFbo->height )
+		{
+			if ( glRefConfig.invalidateFramebuffer )
+			{
+				const GLenum depthAtt = GL_DEPTH_ATTACHMENT;
+				qglInvalidateFramebuffer_ext( GL_FRAMEBUFFER, 1, &depthAtt );
+				qglClear( clearBits );
+			}
+			else
+			{
+				qglScissor( 0, 0, tr.piSunShadowFbo->width, tr.piSunShadowFbo->height );
+				qglClear( clearBits );
+				qglScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY,
+					backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
+			}
+			clearBits = 0;
+		}
+	}
+
+	if ( clearBits )
+	{
+		qglClear( clearBits );
+	}
+
+	if ( !( backEnd.viewParms.flags & VPF_DEPTHSHADOW ) && !backEnd.viewParms.isPortalSky )
+	{
+		backEnd.softDepthCaptured = qfalse;
+		backEnd.softDepthBoundImage = NULL;
+	}
 
 	if ( ( backEnd.refdef.rdflags & RDF_HYPERSPACE ) )
 	{
@@ -425,6 +567,14 @@ void RB_BeginDrawingView (void) {
 }
 
 
+static void RB_ParallelSetupEntitySpheres( int start, int end, void *ctx ) {
+	trRefEntity_t **sphereEntities = (trRefEntity_t **)ctx;
+	int idx;
+	for ( idx = start; idx < end; idx++ ) {
+		RB_Sphere_SetupEntityFor( sphereEntities[idx], &backEnd.spheres[idx] );
+	}
+}
+
 /*
 ==================
 RB_RenderDrawSurfList
@@ -444,6 +594,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	double			originalTime;
 	FBO_t*			fbo = NULL;
 	qboolean		bStaticModel, oldbStaticModel;
+	int64_t			t0 = ( r_speeds->integer == 8 ) ? R_NowUsec() : 0;
 
 	// save original time for entity shader offsets
 	originalTime = backEnd.refdef.floatTime;
@@ -467,11 +618,48 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
     //=========================
 
 	backEnd.pc.c_surfaces += numDrawSurfs;
+	backEnd.numSpheresUsed = 0;
+
+	if ( !backEnd.depthFill && !( backEnd.viewParms.flags & VPF_DEPTHSHADOW )
+		&& !( backEnd.refdef.rdflags & RDF_HUD ) && !r_fastentlight->integer
+		&& r_drawspherelights->integer && !r_light_lines->integer && !r_light_sun_line->integer ) {
+		trRefEntity_t *sphereEntities[MAX_SPHERE_LIGHTS];
+		unsigned int prevSort = ~0U;
+		for ( i = 0; i < numDrawSurfs && backEnd.numSpheresUsed < MAX_SPHERE_LIGHTS; i++ ) {
+			if ( drawSurfs[i].sort == prevSort || *drawSurfs[i].surface == SF_SPRITE ) {
+				continue;
+			}
+			prevSort = drawSurfs[i].sort;
+			R_DecomposeSort( prevSort, &entityNum, &shader, &fogNum, &dlighted, &pshadowed, &bStaticModel );
+			if ( !bStaticModel && entityNum != REFENTITYNUM_WORLD ) {
+				trRefEntity_t *ent = &backEnd.refdef.entities[entityNum];
+				if ( ent->e.tiki && !ent->sphereCalculated && shader && shader->needsLSpherical && !shader->needsLGrid ) {
+					int idx = backEnd.numSpheresUsed++;
+					ent->lightingSphere = idx;
+					ent->sphereCalculated = 1;
+					backEnd.spheres[idx].TessFunction = NULL;
+					sphereEntities[idx] = ent;
+				}
+			}
+		}
+		if ( backEnd.numSpheresUsed > 0 ) {
+			R_ParallelFor( backEnd.numSpheresUsed, 1, RB_ParallelSetupEntitySpheres, sphereEntities );
+			for ( i = 0; i < backEnd.numSpheresUsed; i++ ) {
+				backEnd.pc.c_characterlights += backEnd.spheres[i].numRealLights;
+			}
+		}
+	}
 
 	for (i = 0, drawSurf = drawSurfs ; i < numDrawSurfs ; i++, drawSurf++) {
-		if ( drawSurf->sort == (unsigned)oldSort && drawSurf->cubemapIndex == oldCubemapIndex) {
-			if (backEnd.depthFill && shader && (shader->sort != SS_OPAQUE && shader->sort != SS_PORTAL))
-				continue;
+		if ( drawSurf->sort == (unsigned)oldSort && drawSurf->cubemapIndex == oldCubemapIndex && *drawSurf->surface != SF_SPRITE ) {
+			if (backEnd.depthFill && shader) {
+				if (backEnd.viewParms.flags & VPF_PISUNSHADOW) {
+					if (!R_ShaderCastsSunShadow(shader))
+						continue;
+				} else if (shader->sort != SS_OPAQUE && shader->sort != SS_PORTAL) {
+					continue;
+				}
+			}
 
 			// fast path, same as previous sort
 			rb_surfaceTable[ *drawSurf->surface ]( drawSurf->surface );
@@ -486,8 +674,10 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 				&bStaticModel );
 		} else {
 			shader = tr.sortedShaders[((refSprite_t*)drawSurf->surface)->shaderNum];
-			entityNum = ENTITYNUM_WORLD;
+			entityNum = REFENTITYNUM_WORLD;
 			dlighted = 0;
+			pshadowed = 0;
+			fogNum = 0;
 			bStaticModel = qfalse;
         }
         //=========================
@@ -498,6 +688,7 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		// a "entityMergable" shader is a shader that can have surfaces from separate
 		// entities merged into a single batch, like smoke and blood puff sprites
 		if ( shader != NULL && ( shader != oldShader || fogNum != oldFogNum || dlighted != oldDlighted || pshadowed != oldPshadowed || cubemapIndex != oldCubemapIndex
+			|| ( oldShader && (oldShader->flags & 1) )
 			|| ( entityNum != oldEntityNum && !shader->entityMergable )
 			|| ( bStaticModel != oldbStaticModel && !shader->entityMergable )
 			) ) {
@@ -513,8 +704,16 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 			oldCubemapIndex = cubemapIndex;
 		}
 
-		if (backEnd.depthFill && shader && (shader->sort != SS_OPAQUE && shader->sort != SS_PORTAL))
-			continue;
+		if (backEnd.depthFill && shader) {
+			if (backEnd.viewParms.flags & VPF_PISUNSHADOW) {
+				if (!R_ShaderCastsSunShadow(shader))
+					continue;
+			} else if (shader->sort != SS_OPAQUE && shader->sort != SS_PORTAL) {
+				continue;
+			}
+		}
+
+		backEnd.currentSphere = &backEnd.spareSphere;
 
 		//
 		// change the modelview matrix if needed
@@ -629,6 +828,43 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
             //=========================
 		}
 
+		if ( !backEnd.depthFill && !( backEnd.viewParms.flags & VPF_DEPTHSHADOW ) ) {
+			if ( bStaticModel ) {
+				if ( r_drawspherelights->integer ) {
+					RB_Static_BuildDLights();
+				}
+				if ( !backEnd.currentStaticModel->bLightGridCalculated ) {
+					RB_Grid_SetupStaticModel();
+				}
+			} else if ( backEnd.currentEntity && backEnd.currentEntity->e.tiki && shader ) {
+				if ( shader->needsLGrid
+					|| ( shader->needsLSpherical && r_fastentlight->integer )
+					|| !r_drawspherelights->integer ) {
+					backEnd.currentSphere->TessFunction = RB_CalcLightGridColor;
+					RB_Grid_SetupEntity();
+				} else if ( shader->needsLSpherical ) {
+					if ( backEnd.refdef.rdflags & RDF_HUD ) {
+						backEnd.currentSphere = &backEnd.hudSphere;
+						backEnd.hudSphere.TessFunction = 0;
+						RB_Sphere_SetupEntity();
+					} else if ( backEnd.currentEntity->sphereCalculated ) {
+						backEnd.currentSphere = &backEnd.spheres[backEnd.currentEntity->lightingSphere];
+					} else {
+						if ( backEnd.numSpheresUsed == MAX_SPHERE_LIGHTS ) {
+							ri.Printf( PRINT_DEVELOPER, "Spherical lighting: Ran out of space in the sphere array!\n" );
+							backEnd.currentSphere = &backEnd.spareSphere;
+						} else {
+							backEnd.currentSphere = &backEnd.spheres[backEnd.numSpheresUsed];
+							backEnd.currentEntity->lightingSphere = backEnd.numSpheresUsed++;
+							backEnd.currentEntity->sphereCalculated = 1;
+						}
+						backEnd.currentSphere->TessFunction = NULL;
+						RB_Sphere_SetupEntity();
+					}
+				}
+			}
+		}
+
         if (*drawSurf->surface == SF_SPRITE) {
             backEnd.shaderStartTime = ((refSprite_t*)drawSurf->surface)->shaderTime;
         }
@@ -652,6 +888,10 @@ void RB_RenderDrawSurfList( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	GL_SetModelviewMatrix( backEnd.viewParms.world.modelMatrix );
 
 	qglDepthRange (0, 1);
+
+	if ( t0 ) {
+		backEnd.pc.usec_surfs += (int)( R_NowUsec() - t0 );
+	}
 }
 
 
@@ -762,7 +1002,7 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 
 	if (glRefConfig.framebufferObject)
 	{
-		FBO_Bind(tr.renderFbo);
+		FBO_Bind(RB_Get2DFbo());
 	}
 
 	RB_SetGL2D();
@@ -868,7 +1108,7 @@ const void *RB_StretchPic ( const void *data ) {
 	cmd = (const stretchPicCommand_t *)data;
 
 	if (glRefConfig.framebufferObject)
-		FBO_Bind(tr.renderFbo);
+		FBO_Bind(RB_Get2DFbo());
 
 	RB_SetGL2D();
 
@@ -977,7 +1217,17 @@ const void	*RB_DrawSurfs( const void *data ) {
 
 		backEnd.depthFill = qtrue;
 		qglColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+		if (backEnd.viewParms.flags & VPF_PISUNSHADOW)
+		{
+			qglEnable(GL_POLYGON_OFFSET_FILL);
+			qglPolygonOffset(2.0f, 3.0f);
+		}
 		RB_RenderDrawSurfList( cmd->drawSurfs, cmd->numDrawSurfs );
+		if (backEnd.viewParms.flags & VPF_PISUNSHADOW)
+		{
+			qglDisable(GL_POLYGON_OFFSET_FILL);
+			qglPolygonOffset(r_offsetFactor->value, r_offsetUnits->value);
+		}
 		qglColorMask(!backEnd.colorMask[0], !backEnd.colorMask[1], !backEnd.colorMask[2], !backEnd.colorMask[3]);
 		backEnd.depthFill = qfalse;
 
@@ -988,7 +1238,7 @@ const void	*RB_DrawSurfs( const void *data ) {
 				// If we're using multisampling, resolve the depth first
 				FBO_FastBlit(tr.renderFbo, NULL, tr.msaaResolveFbo, NULL, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
 			}
-			else if (tr.renderFbo == NULL && tr.renderDepthImage)
+			else if (oldFbo == NULL && tr.renderDepthImage)
 			{
 				// If we're rendering directly to the screen, copy the depth to a texture
 				// This is incredibly slow on Intel Graphics, so just skip it on there
@@ -1233,6 +1483,13 @@ const void	*RB_DrawSurfs( const void *data ) {
 
 		// add light flares on lights that aren't obscured
 		RB_RenderFlares();
+		if ( !(backEnd.refdef.rdflags & RDF_HUD) ) {
+			R_DrawLensFlares();
+		}
+		if ( g_bInfoworldtris ) {
+			g_bInfoworldtris = qfalse;
+			R_PrintInfoWorldtris();
+		}
 	}
 
 	if (glRefConfig.framebufferObject && tr.renderCubeFbo && backEnd.viewParms.targetFbo == tr.renderCubeFbo)
@@ -1270,20 +1527,38 @@ const void	*RB_DrawBuffer( const void *data ) {
 	if(tess.numIndexes)
 		RB_EndSurface();
 
+	backEnd.renderFboCleared = qfalse;
+	backEnd.postProcessedToScreen = qfalse;
+	backEnd.softDepthCaptured = qfalse;
+	backEnd.softDepthBoundImage = NULL;
+
 	if (glRefConfig.framebufferObject)
 		FBO_Bind(NULL);
 
 	qglDrawBuffer( cmd->buffer );
 
-	// clear screen for debugging
-	if ( r_clear->integer ) {
-		if (glRefConfig.framebufferObject && tr.renderFbo) {
-			FBO_Bind(tr.renderFbo);
+	// Ensure full-surface clear at frame start so TBDR GPUs (e.g. Raspberry Pi 5 VideoCore VII)
+	// can skip loading the previous frame's color/depth tiles from RAM.
+	GL_State( GLS_DEFAULT );
+	{
+		FBO_t *clearFbo = RB_Get2DFbo();
+		if (clearFbo) {
+			FBO_Bind(clearFbo);
+			qglScissor( 0, 0, clearFbo->width, clearFbo->height );
+			if (clearFbo == tr.renderFbo) {
+				backEnd.renderFboCleared = qtrue;
+			}
+		} else {
+			qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 		}
-
-		qglClearColor( 1, 0, 0.5, 1 );
-		qglClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
 	}
+
+	if ( r_clear->integer ) {
+		qglClearColor( 1, 0, 0.5, 1 );
+	} else {
+		qglClearColor( 0, 0, 0, 1 );
+	}
+	qglClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | (glConfig.stencilBits ? GL_STENCIL_BUFFER_BIT : 0) );
 
 	return (const void *)(cmd + 1);
 }
@@ -1395,7 +1670,7 @@ const void *RB_ClearDepth(const void *data)
 
 	if (glRefConfig.framebufferObject)
 	{
-		FBO_Bind(tr.renderFbo);
+		FBO_Bind(RB_WantOffscreen3D() ? tr.renderFbo : NULL);
 	}
 
 	qglClear(GL_DEPTH_BUFFER_BIT);
@@ -1454,6 +1729,18 @@ static void RB_PresentToScreen(void)
 {
 	if (!glRefConfig.framebufferObject)
 		return;
+
+	if (RB_UseDirectScreenPost())
+	{
+		// In direct-to-screen mode, menus/OFF mode render straight to FBO 0 and
+		// RB_PostProcess composites tr.renderFbo straight to FBO 0 before 2D HUD.
+		// Only blit as a safety fallback if 3D drew into tr.renderFbo without RB_PostProcess.
+		if (backEnd.renderFboCleared && !backEnd.postProcessedToScreen && tr.renderFbo)
+		{
+			FBO_FastBlit(tr.renderFbo, NULL, NULL, NULL, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+		}
+		return;
+	}
 
 	const FBO_t *src = NULL;
 
@@ -1537,7 +1824,14 @@ const void	*RB_SwapBuffers( const void *data ) {
 
 	GLimp_LogComment( "***************** RB_SwapBuffers *****************\n\n\n" );
 
-	GLimp_EndFrame();
+	{
+		int64_t tSwap = ( r_speeds->integer == 8 ) ? R_NowUsec() : 0;
+		GLimp_EndFrame();
+		R_VaoRingEndFrame();
+		if ( tSwap ) {
+			backEnd.pc.usec_swap += (int)( R_NowUsec() - tSwap );
+		}
+	}
 
 	backEnd.projection2D = qfalse;
 
@@ -1592,21 +1886,83 @@ const void *RB_PostProcess(const void *data)
 	FBO_t *srcFbo, *dstFbo;
 	ivec4_t srcBox, dstBox;
 	qboolean autoExposure;
+	qboolean wantModernPost;
+	qboolean isScaled;
 
 	// finish any 2D drawing if needed
 	if(tess.numIndexes)
 		RB_EndSurface();
 
-	if (!glRefConfig.framebufferObject || !r_postProcess->integer)
+	if (cmd)
+	{
+		backEnd.refdef = cmd->refdef;
+		backEnd.viewParms = cmd->viewParms;
+	}
+
+	srcBox[0] = backEnd.viewParms.viewportX;
+	srcBox[1] = backEnd.viewParms.viewportY;
+	srcBox[2] = backEnd.viewParms.viewportWidth;
+	srcBox[3] = backEnd.viewParms.viewportHeight;
+
+	dstBox[0] = backEnd.refdef.x;
+	dstBox[1] = glConfig.vidHeight - (backEnd.refdef.y + backEnd.refdef.height);
+	dstBox[2] = backEnd.refdef.width;
+	dstBox[3] = backEnd.refdef.height;
+
+	// Direct-to-FBO0 On-Chip Filmic Tonemapping via GL_EXT_shader_framebuffer_fetch:
+	// Runs straight inside VideoCore VII tile memory with 0 offscreen FBO and 0 RAM traffic!
+	if (!RB_WantOffscreen3D())
+	{
+		if (((r_filmicTonemap && r_filmicTonemap->integer > 0)
+			|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0))
+			&& glRefConfig.framebufferFetch && tr.postFxShader[4].program)
+		{
+			RB_OnChipFilmicTonemap(dstBox);
+			backEnd.postProcessedToScreen = qtrue;
+		}
+		return (const void *)(cmd + 1);
+	}
+
+	isScaled = (srcBox[2] != dstBox[2] || srcBox[3] != dstBox[3]);
+	wantModernPost = ((r_bloom && r_bloom->integer > 0)
+		|| (r_filmicTonemap && r_filmicTonemap->integer > 0)
+		|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0)
+		|| (r_sharpen && r_sharpen->integer > 0)
+		|| isScaled);
+
+	if (!glRefConfig.framebufferObject || !tr.renderFbo || (!r_postProcess->integer && !wantModernPost))
 	{
 		// do nothing
 		return (const void *)(cmd + 1);
 	}
 
-	if (cmd)
+	// Pi 5 / TBDR Direct-to-Screen Fast Path:
+	// Composite Bloom + Filmic Tonemapping + CAS Sharpen (or Render-Scale bilinear upscale) straight into FBO 0,
+	// discarding 3D depth on-chip and fusing subsequent 2D HUD draws into the exact same tile pass.
+	if (RB_UseDirectScreenPost() && wantModernPost)
 	{
-		backEnd.refdef = cmd->refdef;
-		backEnd.viewParms = cmd->viewParms;
+		if (glRefConfig.invalidateFramebuffer && !r_ssao->integer
+			&& !(r_sunlightMode->integer && (tr.sunShadows || r_forceSun->integer)))
+		{
+			const GLenum depthAtt = GL_DEPTH_ATTACHMENT;
+			FBO_Bind(tr.renderFbo);
+			qglInvalidateFramebuffer_ext(GL_FRAMEBUFFER, 1, &depthAtt);
+		}
+
+		if ((r_bloom && r_bloom->integer > 0) || (r_filmicTonemap && r_filmicTonemap->integer > 0)
+			|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0)
+			|| (r_sharpen && r_sharpen->integer > 0))
+		{
+			RB_ModernPostProcess(tr.renderFbo, srcBox, NULL, dstBox);
+		}
+		else
+		{
+			FBO_Blit(tr.renderFbo, srcBox, NULL, NULL, dstBox, NULL, NULL, 0);
+		}
+
+		FBO_Bind(NULL);
+		backEnd.postProcessedToScreen = qtrue;
+		return (const void *)(cmd + 1);
 	}
 
 	srcFbo = tr.renderFbo;
@@ -1620,38 +1976,66 @@ const void *RB_PostProcess(const void *data)
 		srcFbo = tr.msaaResolveFbo;
 	}
 
-	dstBox[0] = backEnd.viewParms.viewportX;
-	dstBox[1] = backEnd.viewParms.viewportY;
-	dstBox[2] = backEnd.viewParms.viewportWidth;
-	dstBox[3] = backEnd.viewParms.viewportHeight;
-
-	if (r_ssao->integer)
+	if (r_postProcess->integer && r_ssao->integer)
 	{
-		srcBox[0] = backEnd.viewParms.viewportX      * tr.screenSsaoImage->width  / (float)glConfig.vidWidth;
-		srcBox[1] = backEnd.viewParms.viewportY      * tr.screenSsaoImage->height / (float)glConfig.vidHeight;
-		srcBox[2] = backEnd.viewParms.viewportWidth  * tr.screenSsaoImage->width  / (float)glConfig.vidWidth;
-		srcBox[3] = backEnd.viewParms.viewportHeight * tr.screenSsaoImage->height / (float)glConfig.vidHeight;
+		ivec4_t ssaoSrcBox;
+		ssaoSrcBox[0] = backEnd.viewParms.viewportX      * tr.screenSsaoImage->width  / (float)glConfig.vidWidth;
+		ssaoSrcBox[1] = backEnd.viewParms.viewportY      * tr.screenSsaoImage->height / (float)glConfig.vidHeight;
+		ssaoSrcBox[2] = backEnd.viewParms.viewportWidth  * tr.screenSsaoImage->width  / (float)glConfig.vidWidth;
+		ssaoSrcBox[3] = backEnd.viewParms.viewportHeight * tr.screenSsaoImage->height / (float)glConfig.vidHeight;
 
-		FBO_Blit(tr.screenSsaoFbo, srcBox, NULL, srcFbo, dstBox, NULL, NULL, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO);
+		FBO_Blit(tr.screenSsaoFbo, ssaoSrcBox, NULL, srcFbo, srcBox, NULL, NULL, GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ZERO);
 	}
-
-	srcBox[0] = backEnd.viewParms.viewportX;
-	srcBox[1] = backEnd.viewParms.viewportY;
-	srcBox[2] = backEnd.viewParms.viewportWidth;
-	srcBox[3] = backEnd.viewParms.viewportHeight;
 
 	if (srcFbo)
 	{
-		if (r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
+		if (r_postProcess->integer && r_hdr->integer && (r_toneMap->integer || r_forceToneMap->integer))
 		{
 			autoExposure = r_autoExposure->integer || r_forceAutoExposure->integer;
 
 			// Use an intermediate FBO because it can't blit to the same FBO directly
 			// and can't read from an MSAA dstFbo later.
-			RB_ToneMap(srcFbo, srcBox, tr.screenScratchFbo, srcBox, autoExposure);
-			FBO_FastBlit(tr.screenScratchFbo, srcBox, srcFbo, srcBox, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+			RB_ToneMap(srcFbo, srcBox, tr.screenScratchFbo, dstBox, autoExposure);
+			FBO_FastBlit(tr.screenScratchFbo, dstBox, srcFbo, dstBox, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+			Vector4Copy(dstBox, srcBox);
 		}
-		else if (r_cameraExposure->value != 0.0f)
+		else if (wantModernPost && tr.screenScratchFbo)
+		{
+			if ((r_bloom && r_bloom->integer > 0) || (r_filmicTonemap && r_filmicTonemap->integer > 0)
+				|| (r_sharpen && r_sharpen->integer > 0))
+			{
+				RB_ModernPostProcess(srcFbo, srcBox, tr.screenScratchFbo, dstBox);
+			}
+			else
+			{
+				// Pure render-scale bilinear upscale with zero extra shader cost
+				FBO_FastBlit(srcFbo, srcBox, tr.screenScratchFbo, dstBox, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+			}
+
+			// Zero-copy FBO ping-pong swap on full-screen non-MSAA path (saves 1 full 1080p blit/frame on Pi 5!)
+			if (!tr.msaaResolveFbo && srcFbo == tr.renderFbo
+				&& dstBox[0] == 0 && dstBox[1] == 0
+				&& dstBox[2] == tr.renderFbo->width && dstBox[3] == tr.renderFbo->height)
+			{
+				FBO_t *tmpFbo = tr.renderFbo;
+				image_t *tmpImg = tr.renderImage;
+
+				tr.renderFbo = tr.screenScratchFbo;
+				tr.screenScratchFbo = tmpFbo;
+				tr.renderImage = tr.screenScratchImage;
+				tr.screenScratchImage = tmpImg;
+
+				srcFbo = tr.renderFbo;
+				dstFbo = tr.renderFbo;
+				FBO_Bind(tr.renderFbo);
+			}
+			else
+			{
+				FBO_FastBlit(tr.screenScratchFbo, dstBox, srcFbo, dstBox, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+			}
+			Vector4Copy(dstBox, srcBox);
+		}
+		else if (r_postProcess->integer && r_cameraExposure->value != 0.0f)
 		{
 			vec4_t color;
 
@@ -1664,13 +2048,16 @@ const void *RB_PostProcess(const void *data)
 		}
 	}
 
-	if (r_drawSunRays->integer)
+	if (r_postProcess->integer && r_drawSunRays->integer)
 		RB_SunRays(srcFbo, srcBox, srcFbo, srcBox);
 
-	if (1)
-		RB_BokehBlur(srcFbo, srcBox, srcFbo, srcBox, backEnd.refdef.blurFactor);
-	else
-		RB_GaussianBlur(srcFbo, srcFbo, backEnd.refdef.blurFactor);
+	if (r_postProcess->integer && backEnd.refdef.blurFactor > 0.0004f)
+	{
+		if (1)
+			RB_BokehBlur(srcFbo, srcBox, srcFbo, srcBox, backEnd.refdef.blurFactor);
+		else
+			RB_GaussianBlur(srcFbo, srcFbo, backEnd.refdef.blurFactor);
+	}
 
 	if (srcFbo != dstFbo)
 		FBO_FastBlit(srcFbo, srcBox, dstFbo, dstBox, GL_COLOR_BUFFER_BIT, GL_NEAREST);

@@ -193,14 +193,14 @@ bool lens_flare::ScreenCalc()
     VectorClear4(eye);
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j++) {
-            eye[i] += point[j] * tr.ori.modelMatrix[i + j * 4];
+            eye[i] += point[j] * backEnd.viewParms.world.modelMatrix[i + j * 4];
         }
     }
 
     VectorClear4(clip);
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j++) {
-            clip[i] += eye[j] * tr.viewParms.projectionMatrix[i + j * 4];
+            clip[i] += eye[j] * backEnd.viewParms.projectionMatrix[i + j * 4];
         }
     }
 
@@ -523,20 +523,20 @@ static void R_DrawSunFlareBlend()
 
 void R_DrawLensFlares()
 {
-    // FIXME: unimplemented (GL2)
-#if 0
-    int i;
+    int            i;
+    mat4_t         savedModelview, savedProjection, identityMat, orthoMat;
+    qboolean       savedProjection2D = backEnd.projection2D;
+    trRefEntity_t *savedEntity       = backEnd.currentEntity;
 
-    R_RotateForViewer();
+    Mat4Copy(glState.modelview, savedModelview);
+    Mat4Copy(glState.projection, savedProjection);
+    Mat4Identity(identityMat);
+    Mat4Ortho(-1.0f, 1.0f, -1.0f, 1.0f, -99999.0f, 99999.0f, orthoMat);
+    GL_SetModelviewMatrix(identityMat);
+    GL_SetProjectionMatrix(orthoMat);
+    backEnd.projection2D  = qtrue;
+    backEnd.currentEntity = &backEnd.entity2D;
 
-    qglPushMatrix();
-    qglLoadIdentity();
-    qglMatrixMode(GL_PROJECTION);
-    qglPushMatrix();
-    qglLoadIdentity();
-    qglOrtho(-1.0, 1.0, -1.0, 1.0, -99999.0, 99999.0);
-
-    tess.no_global_fog = true;
     R_DrawSunFlare();
 
     for (i = 0; i < backEnd.refdef.num_entities; i++) {
@@ -555,10 +555,6 @@ void R_DrawLensFlares()
             }
 
             dlights.SetVect(backEnd.refdef.entities[i].e.origin);
-
-            //
-            // Set the dlight color from entity
-            //
 
             rgb[0] = backEnd.refdef.entities[i].e.shaderRGBA[0] / 255.0;
             rgb[1] = backEnd.refdef.entities[i].e.shaderRGBA[1] / 255.0;
@@ -600,12 +596,11 @@ void R_DrawLensFlares()
     }
 
     R_DrawSunFlareBlend();
-    tess.no_global_fog = qfalse;
 
-    qglPopMatrix();
-    qglMatrixMode(GL_MODELVIEW);
-    qglPopMatrix();
-#endif
+    backEnd.projection2D  = savedProjection2D;
+    backEnd.currentEntity = savedEntity;
+    GL_SetProjectionMatrix(savedProjection);
+    GL_SetModelviewMatrix(savedModelview);
 }
 
 void R_InitLensFlare()
@@ -649,14 +644,14 @@ void sun_flare_class::SunScreenCalc()
     VectorClear4(eye);
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j++) {
-            eye[i] += point[j] * tr.ori.modelMatrix[i + j * 4];
+            eye[i] += point[j] * backEnd.viewParms.world.modelMatrix[i + j * 4];
         }
     }
 
     VectorClear4(clip);
     for (i = 0; i < 4; i++) {
         for (j = 0; j < 4; j++) {
-            clip[i] += eye[j] * tr.viewParms.projectionMatrix[i + j * 4];
+            clip[i] += eye[j] * backEnd.viewParms.projectionMatrix[i + j * 4];
         }
     }
 

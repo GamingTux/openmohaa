@@ -591,6 +591,19 @@ static ID_INLINE float Q_fabs(float x) {
 #define Q_fabs __fabsf
 #endif
 
+#elif defined(__aarch64__) || defined(_M_ARM64)
+
+static ID_INLINE float Q_rsqrt( float number ) {
+	if ( number <= 0.0f ) {
+		return 0.0f;
+	}
+	return 1.0f / sqrtf( number );
+}
+
+static ID_INLINE float Q_fabs( float x ) {
+	return fabsf( x );
+}
+
 #else
 float Q_fabs( float f );
 float Q_rsqrt( float f );		// reciprocal square root

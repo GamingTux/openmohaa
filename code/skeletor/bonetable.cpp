@@ -219,9 +219,9 @@ static const char *bogusNameTable[] = {
     "JAW_open-open$",
     "MOUTH_L_smile_open$",
     "VISEME_Eat$",
-    "right foot placeholder pos"
-    "right foot placeholder rot"
-    "left foot placeholder pos"
+    "right foot placeholder pos",
+    "right foot placeholder rot",
+    "left foot placeholder pos",
     "left foot placeholder rot"
 };
 

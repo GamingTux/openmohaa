@@ -24,6 +24,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #include "tr_local.h"
 #include "../corepp/tiki.h"
+#include "../renderercommon/tr_threadpool.h"
 
 #define MAX_STATIC_MODELS_SURFS    8192
 #define MAX_DISTINCT_STATIC_MODELS 1000
@@ -222,6 +223,117 @@ void R_InitStaticModels(void)
     tr.refdef.staticModelData    = tr.world->staticModelData;
 }
 
+static int R_CullStaticModelBox(const cStaticModelUnpacked_t *SM, dtiki_t *tiki, float fScale, const vec3_t vLocalOrg)
+{
+    vec3_t   bounds[2];
+    vec3_t   transformed[8];
+    vec3_t   v;
+    int      i, j;
+    int      anyBack = 0;
+    int      front, back;
+    cplane_t *frust;
+
+    if (r_nocull->integer) {
+        return CULL_CLIP;
+    }
+
+    for (i = 0; i < 3; i++) {
+        bounds[0][i] = vLocalOrg[i] + tiki->a->mins[i] * fScale;
+        bounds[1][i] = vLocalOrg[i] + tiki->a->maxs[i] * fScale;
+    }
+
+    for (i = 0; i < 8; i++) {
+        v[0] = bounds[i & 1][0];
+        v[1] = bounds[(i >> 1) & 1][1];
+        v[2] = bounds[(i >> 2) & 1][2];
+
+        VectorCopy(SM->origin, transformed[i]);
+        VectorMA(transformed[i], v[0], SM->axis[0], transformed[i]);
+        VectorMA(transformed[i], v[1], SM->axis[1], transformed[i]);
+        VectorMA(transformed[i], v[2], SM->axis[2], transformed[i]);
+    }
+
+    for (i = 0; i < tr.viewParms.fog.extrafrustums + 4; i++) {
+        frust = &tr.viewParms.frustum[i];
+        front = back = 0;
+        for (j = 0; j < 8; j++) {
+            if (DotProduct(transformed[j], frust->normal) > frust->dist) {
+                front = 1;
+                if (back) {
+                    break;
+                }
+            } else {
+                back = 1;
+            }
+        }
+        if (!front) {
+            return CULL_OUT;
+        }
+        anyBack |= back;
+    }
+
+    return anyBack ? CULL_CLIP : CULL_IN;
+}
+
+typedef struct {
+    byte *visFlags;
+} staticModelCullCtx_t;
+
+static void R_ParallelCullStaticModels(int start, int end, void *ctx)
+{
+    staticModelCullCtx_t *cullCtx = (staticModelCullCtx_t *)ctx;
+    byte                 *visFlags = cullCtx->visFlags;
+
+    for (int i = start; i < end; i++) {
+        cStaticModelUnpacked_t *SM = &tr.world->staticModels[i];
+
+        if (tr.world->numVisStaticModels && SM->visCount != tr.viewCount) {
+            visFlags[i] = 0;
+            continue;
+        }
+
+        dtiki_t *tiki = SM->tiki;
+        if (!tiki) {
+            visFlags[i] = 0;
+            continue;
+        }
+
+        float  tiki_scale = tiki->load_scale * SM->scale;
+        vec3_t tiki_localorigin;
+        vec3_t tiki_worldorigin;
+        VectorScale(tiki->load_origin, tiki_scale, tiki_localorigin);
+        tiki_worldorigin[0] = SM->origin[0] + tiki_localorigin[0] * SM->axis[0][0]
+                            + tiki_localorigin[1] * SM->axis[1][0] + tiki_localorigin[2] * SM->axis[2][0];
+        tiki_worldorigin[1] = SM->origin[1] + tiki_localorigin[0] * SM->axis[0][1]
+                            + tiki_localorigin[1] * SM->axis[1][1] + tiki_localorigin[2] * SM->axis[2][1];
+        tiki_worldorigin[2] = SM->origin[2] + tiki_localorigin[0] * SM->axis[0][2]
+                            + tiki_localorigin[1] * SM->axis[1][2] + tiki_localorigin[2] * SM->axis[2][2];
+
+        int iRadiusCull = R_CullPointAndRadius(tiki_worldorigin, SM->cull_radius);
+        if (iRadiusCull == CULL_OUT) {
+            visFlags[i] = 0;
+            continue;
+        }
+
+        if (iRadiusCull == CULL_CLIP && R_CullStaticModelBox(SM, tiki, tiki_scale, tiki_localorigin) == CULL_OUT) {
+            visFlags[i] = 0;
+            continue;
+        }
+
+        if (tr.viewParms.isPortal) {
+            SM->lodpercentage[1] = R_CalcLod(tiki_worldorigin, SM->cull_radius / SM->scale);
+        } else {
+            SM->lodpercentage[0] = R_CalcLod(tiki_worldorigin, SM->cull_radius / SM->scale);
+        }
+
+        if (!SM->bLightGridCalculated) {
+            RB_SetupStaticModelGridLighting(&tr.refdef, SM, SM->origin);
+        }
+
+        visFlags[i] = 1;
+    }
+}
+
 /*
 ==============
 R_CullStaticModel
@@ -309,12 +421,116 @@ void R_AddStaticModelSurfaces(void)
 
     tr.shiftedIsStatic = (1 << QSORT_STATICMODEL_SHIFT);
 
+    if (!(r_showcull->integer & 12) && !r_showstaticlod->integer && !r_showstaticbboxes->integer) {
+        byte *visFlags = (byte *)ri.Hunk_AllocateTempMemory(tr.world->numStaticModels);
+        staticModelCullCtx_t cullCtx = { visFlags };
+
+        R_ParallelFor(tr.world->numStaticModels, 32, R_ParallelCullStaticModels, &cullCtx);
+
+        for (i = 0; i < tr.world->numStaticModels; i++) {
+            if (!visFlags[i]) {
+                continue;
+            }
+
+            SM   = &tr.world->staticModels[i];
+            tiki = SM->tiki;
+
+            tr.currentEntityNum = i;
+            tr.shiftedEntityNum = i << QSORT_ENTITYNUM_SHIFT;
+            ofsStaticData       = 0;
+
+            tiki_scale = tiki->load_scale * SM->scale;
+            VectorScale(tiki->load_origin, tiki_scale, tiki_localorigin);
+            tiki_worldorigin[0] = SM->origin[0] + tiki_localorigin[0] * SM->axis[0][0]
+                                + tiki_localorigin[1] * SM->axis[1][0] + tiki_localorigin[2] * SM->axis[2][0];
+            tiki_worldorigin[1] = SM->origin[1] + tiki_localorigin[0] * SM->axis[0][1]
+                                + tiki_localorigin[1] * SM->axis[1][1] + tiki_localorigin[2] * SM->axis[2][1];
+            tiki_worldorigin[2] = SM->origin[2] + tiki_localorigin[0] * SM->axis[0][2]
+                                + tiki_localorigin[1] * SM->axis[1][2] + tiki_localorigin[2] * SM->axis[2][2];
+
+            dtikisurface_t *dsurf = tiki->surfaces;
+            for (int mesh = 0; mesh < tiki->numMeshes; mesh++) {
+                skelHeaderGame_t  *skelmodel = ri.TIKI_GetSkel(tiki->mesh[mesh]);
+                skelSurfaceGame_t *surface;
+                staticSurface_t   *s_surface;
+                shader_t          *shader;
+                float              fDist;
+                vec3_t             vDelta;
+
+                if (!skelmodel) {
+                    continue;
+                }
+
+                surface = skelmodel->pSurfaces;
+                for (j = 0; j < skelmodel->numSurfaces;
+                     j++, ofsStaticData += surface->numVerts, surface = surface->pNext, dsurf++) {
+                    if (g_nStaticSurfaces >= MAX_STATIC_MODELS_SURFS) {
+                        ri.Printf(
+                            PRINT_DEVELOPER,
+                            "^~^~^ ERROR: MAX_STATIC_MODELS_SURFS exceeded - surface of '%s' skipped\n",
+                            tiki->a->name
+                        );
+                        continue;
+                    }
+
+                    s_surface                = &g_staticSurfaces[g_nStaticSurfaces++];
+                    s_surface->ident         = SF_TIKI_STATIC;
+                    s_surface->ofsStaticData = ofsStaticData;
+                    s_surface->surface       = surface;
+                    s_surface->meshNum       = mesh;
+
+                    shader = tr.shaders[dsurf->hShader[0]];
+
+                    if (shader->numUnfoggedPasses == 1 && !r_nocull->integer) {
+                        switch (shader->unfoggedStages[0]->alphaGen) {
+                        case AGEN_DIST_FADE:
+                            if (R_DistanceCullPointAndRadius(
+                                    shader->fDistNear + shader->fDistRange, tiki_worldorigin, SM->cull_radius
+                                )
+                                == CULL_OUT) {
+                                continue;
+                            }
+                            break;
+                        case AGEN_ONE_MINUS_DIST_FADE:
+                            if (R_DistanceCullPointAndRadius(shader->fDistNear, tiki_worldorigin, SM->cull_radius)
+                                == CULL_IN) {
+                                continue;
+                            }
+                            break;
+                        case AGEN_TIKI_DIST_FADE:
+                            fDist = (shader->fDistNear + shader->fDistRange);
+                            VectorSubtract(tiki_worldorigin, tr.viewParms.ori.origin, vDelta);
+                            if (VectorLengthSquared(vDelta) >= Square(fDist)) {
+                                continue;
+                            }
+                            break;
+                        case AGEN_ONE_MINUS_TIKI_DIST_FADE:
+                            fDist = (shader->fDistNear + shader->fDistRange);
+                            VectorSubtract(tiki_worldorigin, tr.viewParms.ori.origin, vDelta);
+                            if (VectorLengthSquared(vDelta) <= Square(shader->fDistNear)) {
+                                continue;
+                            }
+                            break;
+                        }
+                    }
+
+                    SM->bRendered = qtrue;
+                    R_AddDrawSurf((surfaceType_t *)s_surface, shader, 0);
+                }
+            }
+        }
+
+        ri.Hunk_FreeTempMemory(visFlags);
+        tr.shiftedIsStatic = 0;
+        return;
+    }
+
     for (i = 0; i < tr.world->numStaticModels; i++) {
         SM = &tr.world->staticModels[i];
 
-        //if( SM->visCount != tr.visCounts[ tr.visIndex ] ) {
-        //	continue;
-        //}
+        if (tr.world->numVisStaticModels && SM->visCount != tr.viewCount) {
+            continue;
+        }
 
         tiki = SM->tiki;
 

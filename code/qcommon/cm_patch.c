@@ -47,6 +47,9 @@ static const patchCollide_t	*debugPatchCollide;
 static const facet_t		*debugFacet;
 static qboolean		debugBlock;
 static vec3_t		debugBlockPoints[4];
+#ifndef BSPC
+static cvar_t		*r_debugSurfaceUpdate;
+#endif
 
 /*
 =================
@@ -56,6 +59,11 @@ CM_ClearLevelPatches
 void CM_ClearLevelPatches( void ) {
 	debugPatchCollide = NULL;
 	debugFacet = NULL;
+#ifndef BSPC
+	if ( !r_debugSurfaceUpdate ) {
+		r_debugSurfaceUpdate = Cvar_Get( "r_debugSurfaceUpdate", "1", 0 );
+	}
+#endif
 }
 
 /*
@@ -1298,10 +1306,7 @@ void CM_TracePointThroughPatchCollide( traceWork_t *tw, const struct patchCollid
 		if ( j == facet->numBorders ) {
 			// we hit this facet
 #ifndef BSPC
-			if (!cv) {
-				cv = Cvar_Get( "r_debugSurfaceUpdate", "1", 0 );
-			}
-			if (cv->integer) {
+			if (r_debugSurfaceUpdate && r_debugSurfaceUpdate->integer) {
 				debugPatchCollide = pc;
 				debugFacet = facet;
 			}
@@ -1438,10 +1443,7 @@ void CM_TraceThroughPatchCollide( traceWork_t *tw, const struct patchCollide_s *
 		if (enterFrac <= leaveFrac && enterFrac >= 0) {
 			if (enterFrac < tw->trace.fraction) {
 #ifndef BSPC
-				if (!cv) {
-					cv = Cvar_Get( "r_debugSurfaceUpdate", "1", 0 );
-				}
-				if (cv && cv->integer) {
+				if (r_debugSurfaceUpdate && r_debugSurfaceUpdate->integer) {
 					debugPatchCollide = pc;
 					debugFacet = facet;
 				}

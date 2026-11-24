@@ -520,26 +520,6 @@ int R_CubemapForPoint( vec3_t point )
 
 /*
 ===============
-RB_SetupEntityGridLighting
-===============
-*/
-void RB_SetupEntityGridLighting()
-{
-	// FIXME: unimplemented
-}
-
-/*
-===============
-RB_SetupStaticModelGridLighting
-===============
-*/
-void RB_SetupStaticModelGridLighting(trRefdef_t *refdef, cStaticModelUnpacked_t *ent, const vec3_t lightOrigin)
-{
-    // FIXME: unimplemented
-}
-
-/*
-===============
 R_PointInLeaf
 ===============
 */
@@ -598,6 +578,7 @@ void R_GetLightingGridValue(world_t *world, const vec3_t vPos, vec3_t vAmbientLi
     float  fTotalFactor;
     int    iCurData;
     vec3_t vLightOrigin;
+    vec3_t vLight;
     byte  *pCurData;
 
     if (!world || !world->lightGridData || !world->lightGridOffsets) {
@@ -624,8 +605,7 @@ void R_GetLightingGridValue(world_t *world, const vec3_t vPos, vec3_t vAmbientLi
     fTotalFactor = 0;
     iArrayXStep  = world->lightGridBounds[1];
     iBaseOffset  = world->lightGridBounds[0] + iGridPos[1] + iArrayXStep * iGridPos[0];
-    VectorClear(vDirectedLight);
-    VectorClear(vAmbientLight);
+    VectorClear(vLight);
 
     for (i = 0; i < 4; i++) {
         qboolean bContinue = qfalse;
@@ -673,7 +653,7 @@ void R_GetLightingGridValue(world_t *world, const vec3_t vPos, vec3_t vAmbientLi
 
                     if (pCurData[iData]) {
                         pColor = R_GetLightGridPalettedColor(world, pCurData[iData]);
-                        VectorMA(vAmbientLight, fWeight, pColor, vAmbientLight);
+                        VectorMA(vLight, fWeight, pColor, vLight);
                         fTotalFactor += fWeight;
                     }
 
@@ -684,7 +664,7 @@ void R_GetLightingGridValue(world_t *world, const vec3_t vPos, vec3_t vAmbientLi
 
                     if (pCurData[iData]) {
                         pColor = R_GetLightGridPalettedColor(world, pCurData[iData]);
-                        VectorMA(vDirectedLight, fWeight2, pColor, vDirectedLight);
+                        VectorMA(vLight, fWeight2, pColor, vLight);
                         fTotalFactor += fWeight2;
                     }
 
@@ -719,43 +699,46 @@ void R_GetLightingGridValue(world_t *world, const vec3_t vPos, vec3_t vAmbientLi
             }
 
             pColor = R_GetLightGridPalettedColor(world, pCurData[iData]);
-            VectorMA(vAmbientLight, fWeight + fWeight2, pColor, vAmbientLight);
-            VectorMA(vDirectedLight, fWeight + fWeight2, pColor, vDirectedLight);
+            VectorMA(vLight, fWeight + fWeight2, pColor, vLight);
             fTotalFactor += fWeight + fWeight2;
         } else {
             if (pCurData[iData]) {
                 pColor = R_GetLightGridPalettedColor(world, pCurData[iData]);
-                VectorMA(vAmbientLight, fWeight, pColor, vAmbientLight);
+                VectorMA(vLight, fWeight, pColor, vLight);
                 fTotalFactor += fWeight;
             }
 
             iData += 2;
             if (pCurData[iData]) {
                 pColor = R_GetLightGridPalettedColor(world, pCurData[iData]);
-                VectorMA(vDirectedLight, fWeight2, pColor, vDirectedLight);
+                VectorMA(vLight, fWeight2, pColor, vLight);
                 fTotalFactor += fWeight2;
             }
         }
     }
 
     if (fTotalFactor > 0.0 && fTotalFactor < 0.99) {
-        VectorScale(vAmbientLight, 1.0 / fTotalFactor, vAmbientLight);
-        VectorScale(vDirectedLight, 1.0 / fTotalFactor, vDirectedLight);
+        VectorScale(vLight, 1.0 / fTotalFactor, vLight);
     }
 
     if (fTotalFactor) {
-		/*
         if (vLight[0] > 255.0 || vLight[1] > 255.0 || vLight[2] > 255.0) {
             float t;
-            // normalize color values
             t = 255.0 / Q_max(vLight[0], Q_max(vLight[1], vLight[2]));
             VectorScale(vLight, t, vLight);
         }
-		*/
+        VectorCopy(vLight, vAmbientLight);
+        VectorCopy(vLight, vDirectedLight);
     } else {
 		vDirectedLight[0] = vDirectedLight[1] = vDirectedLight[2] = tr.identityLightByte;
 		vAmbientLight[0] = vAmbientLight[1] = vAmbientLight[2] = tr.identityLightByte;
     }
+}
+
+static void R_GetLightingGridValueFast(const vec3_t vPos, vec3_t vLight)
+{
+    vec3_t vDirected;
+    R_GetLightingGridValue(tr.world, vPos, vLight, vDirected);
 }
 
 /*
@@ -765,7 +748,20 @@ R_GetLightingForDecal
 */
 void R_GetLightingForDecal(vec3_t vLight, const vec3_t vFacing, const vec3_t vOrigin)
 {
-    // FIXME: unimplemented (GL2)
+    vec3_t vDirected;
+
+    R_GetLightingGridValue(tr.world, vOrigin, vLight, vDirected);
+
+    if (!tr.overbrightShift) {
+        return;
+    }
+
+    VectorScale(vLight, tr.overbrightMult, vLight);
+
+    if (vLight[0] > 255.0 || vLight[1] > 255.0 || vLight[2] > 255.0) {
+        float scale = 255.0 / Q_max(vLight[0], Q_max(vLight[1], vLight[2]));
+        VectorScale(vLight, scale, vLight);
+    }
 }
 
 /*
@@ -775,7 +771,208 @@ R_GetLightingForSmoke
 */
 void R_GetLightingForSmoke(vec3_t vLight, const vec3_t vOrigin)
 {
-	// FIXME: unimplemented (GL2)
+    int       i;
+    dlight_t *dl;
+    float     power;
+    vec3_t    dir;
+    vec3_t    vDirected;
+    float     d;
+
+    if (r_smoothsmokelight->integer) {
+        R_GetLightingGridValue(tr.world, vOrigin, vLight, vDirected);
+    } else {
+        R_GetLightingGridValueFast(vOrigin, vLight);
+    }
+
+    for (i = 0; i < backEnd.refdef.num_dlights; i++) {
+        dl = &backEnd.refdef.dlights[i];
+        VectorSubtract(dl->origin, vOrigin, dir);
+        d = VectorLengthSquared(dir);
+
+        power = dl->radius * dl->radius;
+        if (power >= d) {
+            d = dl->radius * 7500.0 / d;
+            VectorMA(vLight, d, dl->color, vLight);
+        }
+    }
+
+    if (tr.overbrightShift) {
+        vLight[0] = tr.overbrightMult * vLight[0];
+        vLight[1] = tr.overbrightMult * vLight[1];
+        vLight[2] = tr.overbrightMult * vLight[2];
+    }
+
+    if (vLight[0] > 255.0 || vLight[1] > 255.0 || vLight[2] > 255.0) {
+        float scale = 255.0 / Q_max(vLight[0], Q_max(vLight[1], vLight[2]));
+        VectorScale(vLight, scale, vLight);
+    }
+
+    vLight[0] /= 255.0;
+    vLight[1] /= 255.0;
+    vLight[2] /= 255.0;
+}
+
+static int RB_GetEntityGridLighting()
+{
+    int       iColor;
+    int       i;
+    dlight_t *dl;
+    float     power;
+    vec3_t    vLight, vDirected;
+    vec3_t    dir;
+    float     d;
+    float    *lightOrigin;
+
+    lightOrigin = backEnd.currentSphere->traceOrigin;
+    if (!(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) && tr.world && tr.world->lightGridData) {
+        R_GetLightingGridValue(tr.world, backEnd.currentSphere->traceOrigin, vLight, vDirected);
+    } else {
+        vLight[0] = vLight[1] = vLight[2] = tr.identityLight * 150.0;
+    }
+
+    for (i = 0; i < backEnd.refdef.num_dlights; i++) {
+        dl = &backEnd.refdef.dlights[i];
+        VectorSubtract(dl->origin, lightOrigin, dir);
+        d = VectorLengthSquared(dir);
+
+        power = dl->radius * dl->radius;
+        if (power >= d) {
+            d = dl->radius * 7500.0 / d;
+            VectorMA(vLight, d, dl->color, vLight);
+        }
+    }
+
+    if (tr.overbrightShift) {
+        vLight[0] = tr.overbrightMult * vLight[0];
+        vLight[1] = tr.overbrightMult * vLight[1];
+        vLight[2] = tr.overbrightMult * vLight[2];
+    }
+
+    if (vLight[0] > 255.0 || vLight[1] > 255.0 || vLight[2] > 255.0) {
+        float scale = 255.0 / Q_max(vLight[0], Q_max(vLight[1], vLight[2]));
+        VectorScale(vLight, scale, vLight);
+    }
+
+    for (i = 0; i < 3; i++) {
+        if (vLight[i] > tr.identityLightByte) {
+            vLight[i] = tr.identityLightByte;
+        }
+    }
+
+    ((byte *)&iColor)[0] = ri.ftol(vLight[0]);
+    ((byte *)&iColor)[1] = ri.ftol(vLight[1]);
+    ((byte *)&iColor)[2] = ri.ftol(vLight[2]);
+    ((byte *)&iColor)[3] = 0xff;
+
+    return iColor;
+}
+
+/*
+===============
+RB_SetupEntityGridLighting
+===============
+*/
+void RB_SetupEntityGridLighting()
+{
+    trRefEntity_t *ent;
+    int            iColor = 0xffffffff;
+
+    if (backEnd.currentEntity->bLightGridCalculated) {
+        return;
+    }
+
+    for (ent = backEnd.currentEntity; ent->e.parentEntity != ENTITYNUM_NONE;
+         ent = &backEnd.refdef.entities[ent->e.parentEntity]) {
+        trRefEntity_t *newref = &backEnd.refdef.entities[ent->e.parentEntity];
+        if (newref == ent) {
+            iColor = newref->iGridLighting;
+            break;
+        }
+
+        if (newref->bLightGridCalculated) {
+            iColor = newref->iGridLighting;
+            break;
+        }
+    }
+
+    if (ent->e.parentEntity == ENTITYNUM_NONE) {
+        iColor = RB_GetEntityGridLighting();
+    }
+
+    ent = backEnd.currentEntity;
+    for (;;) {
+        ent->bLightGridCalculated = qtrue;
+        ent->iGridLighting        = iColor;
+        if (ent->e.parentEntity == ENTITYNUM_NONE) {
+            break;
+        }
+
+        if (ent == &backEnd.refdef.entities[ent->e.parentEntity]) {
+            break;
+        }
+
+        ent = &backEnd.refdef.entities[ent->e.parentEntity];
+    }
+}
+
+/*
+===============
+RB_SetupStaticModelGridLighting
+===============
+*/
+void RB_SetupStaticModelGridLighting(trRefdef_t *refdef, cStaticModelUnpacked_t *ent, const vec3_t lightOrigin)
+{
+    int       i;
+    dlight_t *dl;
+    float     power;
+    vec3_t    vLight, vDirected;
+    vec3_t    dir;
+    float     d;
+
+    if (ent->bLightGridCalculated) {
+        return;
+    }
+    ent->bLightGridCalculated = qtrue;
+
+    if (!(refdef->rdflags & RDF_NOWORLDMODEL) && tr.world && tr.world->lightGridData) {
+        R_GetLightingGridValue(tr.world, lightOrigin, vLight, vDirected);
+    } else {
+        vLight[0] = vLight[1] = vLight[2] = tr.identityLight * 150.0;
+    }
+
+    for (i = 0; i < refdef->num_dlights; i++) {
+        dl = &refdef->dlights[i];
+        VectorSubtract(dl->origin, lightOrigin, dir);
+        d = VectorLengthSquared(dir);
+
+        power = dl->radius * dl->radius;
+        if (power >= d) {
+            d = dl->radius * 7500.0 / d;
+            VectorMA(vLight, d, dl->color, vLight);
+        }
+    }
+
+    if (tr.overbrightShift) {
+        vLight[0] = tr.overbrightMult * vLight[0];
+        vLight[1] = tr.overbrightMult * vLight[1];
+        vLight[2] = tr.overbrightMult * vLight[2];
+    }
+
+    if (vLight[0] > 255.0 || vLight[1] > 255.0 || vLight[2] > 255.0) {
+        float scale = 255.0 / Q_max(vLight[0], Q_max(vLight[1], vLight[2]));
+        VectorScale(vLight, scale, vLight);
+    }
+
+    for (i = 0; i < 3; i++) {
+        if (vLight[i] > tr.identityLightByte) {
+            vLight[i] = tr.identityLightByte;
+        }
+    }
+
+    ((byte *)&ent->iGridLighting)[0] = ri.ftol(vLight[0]);
+    ((byte *)&ent->iGridLighting)[1] = ri.ftol(vLight[1]);
+    ((byte *)&ent->iGridLighting)[2] = ri.ftol(vLight[2]);
+    ((byte *)&ent->iGridLighting)[3] = 0xff;
 }
 
 qboolean R_FindGridPointForSphere(world_t *world, const vec3_t sphereOrigin, const vec3_t point, vec3_t out) {

@@ -46,10 +46,12 @@ uniform vec4      u_CubeMapInfo;
 #endif
 
 uniform int       u_AlphaTest;
+uniform vec4      u_FarplaneFogColor;
 
 varying vec4      var_TexCoords;
 
 varying vec4      var_Color;
+varying float     var_FogFactor;
 #if (defined(USE_LIGHT) && !defined(USE_FAST_LIGHT))
 varying vec4      var_ColorAmbient;
 #endif
@@ -66,6 +68,20 @@ varying vec4      var_LightDir;
 
 #if defined(USE_PRIMARY_LIGHT) || defined(USE_SHADOWMAP)
 varying vec4      var_PrimaryLightDir;
+#endif
+
+#if defined(USE_WORLD_RELIEF)
+uniform vec4      u_WorldReliefLight;   // xyz = base world light dir, w = relief strength
+uniform vec4      u_WorldReliefParams;  // x = spec strength, y = fresnel strength, z = shininess scale, w = trait (>0 metalTint, <0 snowGlint)
+
+varying vec4      var_ReliefLight;      // xy = screen-space tangent light * distFade, z = base N·H, w = distFade
+varying vec3      var_ReliefHalf;       // xy = screen-space tangent half-vec * distFade, z = grazing Fresnel * distFade
+#endif
+
+#if defined(USE_SUN_SHADOW)
+uniform sampler2DShadow u_SunShadowMap;
+uniform vec4      u_SunShadowParams;    // x = shadowStrength, y = depthBias, z = pcfRadius, w = unused
+varying vec4      var_SunShadowPos;     // xyz = shadow map uv + depth [0..1], w = sunNL
 #endif
 
 
@@ -270,19 +286,6 @@ void main()
 	E = normalize(viewDir);
 #endif
 
-	lightColor = var_Color.rgb;
-
-#if defined(USE_LIGHTMAP)
-	vec4 lightmapColor = texture2D(u_LightMap, var_TexCoords.zw);
-  #if defined(RGBM_LIGHTMAP)
-	lightmapColor.rgb *= lightmapColor.a;
-  #endif
-  #if defined(USE_PBR) && !defined(USE_FAST_LIGHT)
-	lightmapColor.rgb *= lightmapColor.rgb;
-  #endif
-	lightColor *= lightmapColor.rgb;
-#endif
-
 	vec2 texCoords = var_TexCoords.xy;
 
 #if defined(USE_PARALLAXMAP)
@@ -296,7 +299,13 @@ void main()
 	vec4 diffuse = texture2D(u_DiffuseMap, texCoords);
 	
 	float alpha = diffuse.a * var_Color.a;
-	if (u_AlphaTest == 1)
+#if defined(USE_ALPHATEST)
+	if (u_AlphaTest == 3)
+	{
+		if (alpha < 0.5)
+			discard;
+	}
+	else if (u_AlphaTest == 1)
 	{
 		if (alpha == 0.0)
 			discard;
@@ -306,11 +315,20 @@ void main()
 		if (alpha >= 0.5)
 			discard;
 	}
-	else if (u_AlphaTest == 3)
-	{
-		if (alpha < 0.5)
-			discard;
-	}
+#endif
+
+	lightColor = var_Color.rgb;
+
+#if defined(USE_LIGHTMAP)
+	vec4 lightmapColor = texture2D(u_LightMap, var_TexCoords.zw);
+  #if defined(RGBM_LIGHTMAP)
+	lightmapColor.rgb *= lightmapColor.a;
+  #endif
+  #if defined(USE_PBR) && !defined(USE_FAST_LIGHT)
+	lightmapColor.rgb *= lightmapColor.rgb;
+  #endif
+	lightColor *= lightmapColor.rgb;
+#endif
 
 #if defined(USE_LIGHT) && !defined(USE_FAST_LIGHT)
 	L = var_LightDir.xyz;
@@ -513,9 +531,103 @@ void main()
 
 #else
 
+	float sunShadowVis = 1.0;
+  #if defined(USE_SUN_SHADOW)
+	if (u_SunShadowParams.x > 0.001)
+	{
+		vec3 sp = var_SunShadowPos.xyz;
+		float subScale = u_SunShadowParams.w;
+		vec2 edgeXY = min(sp.xy, vec2(subScale) - sp.xy) - vec2(0.004);
+		float edgeFade = clamp(min(edgeXY.x, edgeXY.y) * 10.5, 0.0, 1.0)
+		               * step(0.001, sp.z) * step(sp.z, 0.999);
+		float nlMask = clamp(var_SunShadowPos.w * 4.5, 0.0, 1.0);
+		float lcLum  = dot(lightColor, vec3(0.30, 0.59, 0.11));
+		float litMask = clamp((lcLum - 0.16) * 3.4, 0.0, 1.0);
+		float shadowWeight = edgeFade * nlMask * litMask * u_SunShadowParams.x;
+
+		if (shadowWeight > 0.004)
+		{
+			float zRef = sp.z - u_SunShadowParams.y;
+			float r1 = u_SunShadowParams.z;
+			float r2 = r1 * 0.42;
+			float pcf = shadow2D(u_SunShadowMap, vec3(sp.xy + vec2( r1,  r2), zRef))
+			          + shadow2D(u_SunShadowMap, vec3(sp.xy + vec2(-r1, -r2), zRef));
+			if (subScale >= 0.85)
+			{
+				pcf += shadow2D(u_SunShadowMap, vec3(sp.xy + vec2(-r2,  r1), zRef))
+				     + shadow2D(u_SunShadowMap, vec3(sp.xy + vec2( r2, -r1), zRef));
+				sunShadowVis = pcf * 0.25;
+			}
+			else
+			{
+				sunShadowVis = pcf * 0.5;
+			}
+			float darkAmt = shadowWeight * (1.0 - sunShadowVis);
+			vec3 shadowTint = mix(vec3(1.0), vec3(0.93, 0.96, 1.04), darkAmt);
+			lightColor *= (1.0 - darkAmt) * shadowTint;
+		}
+	}
+  #endif
+
+  #if defined(USE_WORLD_RELIEF)
+	if (u_WorldReliefLight.w > 0.001)
+	{
+		// Material-aware HD micro-relief + crevice depth + metallic/wet/glass Fresnel + snow glint (0 SFU, 0 extra fetches)
+		float lum  = dot(diffuse.rgb, vec3(0.30, 0.59, 0.11));
+		vec2  dLum = clamp(vec2(dFdx(lum), dFdy(lum)), vec2(-0.22), vec2(0.22));
+
+		// Subtle mortar/plank crevice depth + close-up sub-texel micro-grain (auto-faded by distFade to avoid shimmer)
+		float edgeMag  = abs(dLum.x) + abs(dLum.y);
+		float crevice  = 1.0 - min(edgeMag * 0.55, 0.12);
+		vec2  gCell    = abs(fract(texCoords * 48.0) - vec2(0.5));
+		float microGr  = (gCell.x + gCell.y - 0.5) * (0.042 * var_ReliefLight.w);
+
+		// Energy-conserving diffuse micro-relief delta (flat walls keep original lightmap brightness)
+		float reliefDelta = clamp(-dot(dLum, var_ReliefLight.xy), -0.34, 0.36);
+		float lightVis    = clamp(lightmapColor.g * 2.5, 0.12, 1.0) * (0.40 + 0.60 * sunShadowVis);
+		vec3  outRgb      = diffuse.rgb * (lightColor * ((crevice + microGr) + reliefDelta * lightVis));
+
+		float metalMix = max(u_WorldReliefParams.w, 0.0);
+		vec3  specTint = mix(vec3(1.0), clamp(diffuse.rgb * 1.65 + vec3(0.12), 0.25, 1.35), metalMix);
+
+		// Material-tinted directional specular catch (metal, puddles, glass, cobbles, stone, wood)
+		if (u_WorldReliefParams.x > 0.001)
+		{
+			float pertNH = clamp(var_ReliefLight.z - dot(dLum, var_ReliefHalf.xy), 0.0, 1.0);
+			float k  = max(1.0 - (1.0 - pertNH) * u_WorldReliefParams.z, 0.0);
+			float k2 = k * k;
+			float facetMask = clamp(lum * 1.45, 0.14, 1.0);
+			outRgb += lightColor * specTint * (k2 * k2 * u_WorldReliefParams.x * facetMask * var_ReliefLight.w * sunShadowVis);
+		}
+
+		// Grazing-angle Fresnel sheen (wet puddles, glass panes, polished metal, damp sand/cobbles)
+		if (u_WorldReliefParams.y > 0.001)
+		{
+			vec3 fresTint = mix(vec3(0.86, 0.92, 1.0), specTint, metalMix);
+			outRgb += lightColor * fresTint * (var_ReliefHalf.z * u_WorldReliefParams.y * (0.35 + 0.65 * sunShadowVis));
+		}
+
+		// Sunlit snow-crystal micro-glitter (SURF_SNOW, smooth view-shifted peak, zero aliasing)
+		if (u_WorldReliefParams.w < -0.5)
+		{
+			vec2  sCell = fract(texCoords * 72.0 + var_ReliefHalf.xy * 1.8);
+			float glint = max(1.0 - dot(abs(sCell - vec2(0.5)), vec2(5.2)), 0.0);
+			outRgb += lightColor * (glint * glint * 0.28 * var_ReliefLight.w * sunShadowVis * clamp(lum * 1.4, 0.0, 1.0));
+		}
+
+		gl_FragColor.rgb = outRgb;
+	}
+	else
+	{
+		gl_FragColor.rgb = diffuse.rgb * lightColor;
+	}
+  #else
 	gl_FragColor.rgb = diffuse.rgb * lightColor;
+  #endif
 
 #endif
+
+	gl_FragColor.rgb = mix(gl_FragColor.rgb, u_FarplaneFogColor.rgb, clamp(var_FogFactor, 0.0, 1.0));
 
 	gl_FragColor.a = alpha;
 }

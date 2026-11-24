@@ -25,8 +25,19 @@ attribute vec3 attr_LightDirection;
 uniform vec4   u_EnableTextures; // x = normal, y = deluxe, z = specular, w = cube
 #endif
 
-#if defined(USE_LIGHT) && !defined(USE_FAST_LIGHT)
+#if (defined(USE_LIGHT) && !defined(USE_FAST_LIGHT)) || defined(USE_WORLD_RELIEF)
 uniform vec3   u_ViewOrigin;
+#endif
+
+#if defined(USE_WORLD_RELIEF)
+uniform vec3   u_WorldReliefRight;
+uniform vec3   u_WorldReliefUp;
+uniform vec4   u_WorldReliefLight;
+#endif
+
+#if defined(USE_SUN_SHADOW)
+uniform mat4   u_SunShadowMvp;
+uniform vec4   u_SunShadowDir;
 #endif
 
 #if defined(USE_TCGEN)
@@ -50,6 +61,8 @@ uniform vec4   u_DiffuseTexMatrix7;
 uniform mat4   u_ModelViewProjectionMatrix;
 uniform vec4   u_BaseColor;
 uniform vec4   u_VertColor;
+uniform vec2   u_FarplaneFogParams;
+uniform vec4   u_WindParams;
 
 #if defined(USE_MODELMATRIX)
 uniform mat4   u_ModelMatrix;
@@ -76,6 +89,7 @@ uniform float u_PrimaryLightRadius;
 varying vec4   var_TexCoords;
 
 varying vec4   var_Color;
+varying float  var_FogFactor;
 #if defined(USE_LIGHT_VECTOR) && !defined(USE_FAST_LIGHT)
 varying vec4   var_ColorAmbient;
 #endif
@@ -94,6 +108,15 @@ varying vec4   var_LightDir;
 varying vec4   var_PrimaryLightDir;
 #endif
 
+#if defined(USE_WORLD_RELIEF)
+varying vec4   var_ReliefLight;  // xy = screen-space tangent light * distFade, z = base N·H, w = distFade
+varying vec3   var_ReliefHalf;   // xy = screen-space tangent half-vec * distFade, z = grazing Fresnel * distFade
+#endif
+
+#if defined(USE_SUN_SHADOW)
+varying vec4   var_SunShadowPos; // xyz = shadow map uv + depth [0..1], w = max(dot(N, sunDir), 0.0)
+#endif
+
 #if defined(USE_TCGEN)
 vec2 GenTexCoords(int TCGen, vec3 position, vec3 normal, vec3 TCGenVector0, vec3 TCGenVector1)
 {
@@ -109,6 +132,23 @@ vec2 GenTexCoords(int TCGen, vec3 position, vec3 normal, vec3 TCGenVector0, vec3
 		vec2 ref = reflect(viewer, normal).yz;
 		tex.s = ref.x * -0.5 + 0.5;
 		tex.t = ref.y *  0.5 + 0.5;
+	}
+	else if (TCGen == TCGEN_ENVIRONMENT_MAPPED2)
+	{
+		vec3 viewer = normalize(u_LocalViewOrigin - position);
+		float d = dot(normal, viewer);
+		vec3 reflected = (d > 0.0) ? viewer : (viewer - 2.0 * d * normal);
+		tex.s = 0.5 + reflected.y * 0.5;
+		tex.t = 0.5 - reflected.z * 0.5;
+	}
+	else if (TCGen == TCGEN_SUN_REFLECTION)
+	{
+		vec3 viewer = normalize(position - u_LocalViewOrigin);
+		float d = dot(viewer, normal);
+		vec3 reflected = (d > 0.0) ? viewer : (viewer - 2.0 * d * normal);
+		vec3 sunAxis2 = cross(TCGenVector0, TCGenVector1);
+		vec3 sunRef = TCGenVector0 * reflected.x + TCGenVector1 * reflected.z - sunAxis2 * reflected.y;
+		tex = sunRef.yz + vec2(0.5);
 	}
 	else if (TCGen == TCGEN_VECTOR)
 	{
@@ -212,7 +252,28 @@ void main()
 	var_TexCoords.xy = texCoords;
 #endif
 
+	if (u_WindParams.x > 0.0)
+	{
+		float wPhase = u_WindParams.y + u_WindParams.z + dot(position.xy, vec2(0.032, 0.024)) + position.z * 0.018;
+		if (u_WindParams.w > 1.5)
+		{
+			float pin = clamp(attr_TexCoord0.t, 0.0, 1.0);
+			float wave = sin(wPhase * 2.1 + attr_TexCoord0.t * 4.2) + 0.35 * sin(wPhase * 4.5 + attr_TexCoord0.s * 3.0);
+			vec3 windDir = (dot(normal, normal) > 0.01) ? normalize(normal) : vec3(1.0, 0.4, 0.0);
+			position += windDir * (wave * u_WindParams.x * pin);
+		}
+		else
+		{
+			float sway = sin(wPhase) + 0.35 * sin(wPhase * 2.3 + 1.1);
+			float flutter = sin(wPhase * 3.7 + position.x * 0.11) * 0.25;
+			float heightMask = clamp((position.z + 32.0) * 0.010, 0.20, 1.0);
+			position.x += (sway + flutter) * u_WindParams.x * heightMask;
+			position.y += (sway * 0.65 - flutter) * u_WindParams.x * heightMask;
+		}
+	}
+
 	gl_Position = u_ModelViewProjectionMatrix * vec4(position, 1.0);
+	var_FogFactor = (gl_Position.w - u_FarplaneFogParams.x) * u_FarplaneFogParams.y;
 
 #if defined(USE_MODELMATRIX)
 	position  = (u_ModelMatrix * vec4(position, 1.0)).xyz;
@@ -283,5 +344,30 @@ void main()
 	var_Normal    = vec4(normal,    viewDir.x);
 	var_Tangent   = vec4(tangent,   viewDir.y);
 	var_Bitangent = vec4(bitangent, viewDir.z);
+#elif defined(USE_WORLD_RELIEF)
+	vec3 relN = (dot(normal, normal) > 1e-6) ? normalize(normal) : vec3(0.0, 0.0, 1.0);
+	float distFade = clamp(1.0 - max(gl_Position.w - 140.0, 0.0) * 0.0016, 0.0, 1.0);
+	float relScale = u_WorldReliefLight.w * distFade;
+
+	// Project world light and Blinn-Phong half vector onto the surface tangent plane per-vertex
+	vec3 Ltan = u_WorldReliefLight.xyz - relN * dot(u_WorldReliefLight.xyz, relN);
+	vec2 scrL = vec2(dot(u_WorldReliefRight, Ltan), dot(u_WorldReliefUp, Ltan));
+
+	vec3 relV = normalize(u_ViewOrigin - position);
+	vec3 relH = normalize(u_WorldReliefLight.xyz + relV);
+	vec3 Htan = relH - relN * dot(relH, relN);
+	vec2 scrH = vec2(dot(u_WorldReliefRight, Htan), dot(u_WorldReliefUp, Htan));
+	float oneMinusNV = 1.0 - max(dot(relN, relV), 0.0);
+	float fresnel = oneMinusNV * oneMinusNV * oneMinusNV * distFade;
+
+	var_ReliefLight = vec4(scrL * (relScale * 1.55), max(dot(relN, relH), 0.0), distFade);
+	var_ReliefHalf  = vec3(scrH * (relScale * 0.58), fresnel);
+#endif
+
+#if defined(USE_SUN_SHADOW)
+	vec3 shN = (dot(normal, normal) > 1e-6) ? normalize(normal) : vec3(0.0, 0.0, 1.0);
+	float sunNL = max(dot(shN, u_SunShadowDir.xyz), 0.0);
+	float slopeBias = u_SunShadowDir.w * (0.45 + 0.85 * (1.0 - sunNL));
+	var_SunShadowPos = vec4((u_SunShadowMvp * vec4(position + shN * slopeBias, 1.0)).xyz, sunNL);
 #endif
 }

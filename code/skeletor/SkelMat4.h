@@ -24,6 +24,12 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 #pragma once
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+#include <xmmintrin.h>
+#endif
+
 #ifdef __cplusplus
 
 class SkelQuat;
@@ -205,6 +211,57 @@ inline void SkelMat4::Difference(const SkelMat4& m1, const SkelMat4& m2)
 
 inline void SkelMat4::Multiply(const SkelMat4& m1, const SkelMat4& m2)
 {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    const float32x4_t r0 = vld1q_f32(m2.val[0]);
+    const float32x4_t r1 = vld1q_f32(m2.val[1]);
+    const float32x4_t r2 = vld1q_f32(m2.val[2]);
+    const float32x4_t r3 = vcombine_f32(vld1_f32(m2.val[3]), vld1_dup_f32(&m2.val[3][2]));
+
+    float32x4_t out0 = vmulq_n_f32(r0, m1[0][0]);
+    out0             = vfmaq_n_f32(out0, r1, m1[0][1]);
+    out0             = vfmaq_n_f32(out0, r2, m1[0][2]);
+
+    float32x4_t out1 = vmulq_n_f32(r0, m1[1][0]);
+    out1             = vfmaq_n_f32(out1, r1, m1[1][1]);
+    out1             = vfmaq_n_f32(out1, r2, m1[1][2]);
+
+    float32x4_t out2 = vmulq_n_f32(r0, m1[2][0]);
+    out2             = vfmaq_n_f32(out2, r1, m1[2][1]);
+    out2             = vfmaq_n_f32(out2, r2, m1[2][2]);
+
+    float32x4_t out3 = vfmaq_n_f32(r3, r0, m1[3][0]);
+    out3             = vfmaq_n_f32(out3, r1, m1[3][1]);
+    out3             = vfmaq_n_f32(out3, r2, m1[3][2]);
+
+    vst1_f32(val[0], vget_low_f32(out0));
+    vst1q_lane_f32(&val[0][2], out0, 2);
+    vst1_f32(val[1], vget_low_f32(out1));
+    vst1q_lane_f32(&val[1][2], out1, 2);
+    vst1_f32(val[2], vget_low_f32(out2));
+    vst1q_lane_f32(&val[2][2], out2, 2);
+    vst1_f32(val[3], vget_low_f32(out3));
+    vst1q_lane_f32(&val[3][2], out3, 2);
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+    const __m128 r0 = _mm_loadu_ps(m2.val[0]);
+    const __m128 r1 = _mm_loadu_ps(m2.val[1]);
+    const __m128 r2 = _mm_loadu_ps(m2.val[2]);
+    const __m128 r3 = _mm_setr_ps(m2.val[3][0], m2.val[3][1], m2.val[3][2], 0.0f);
+
+    __m128 out0 = _mm_add_ps(_mm_add_ps(_mm_mul_ps(r0, _mm_set1_ps(m1[0][0])), _mm_mul_ps(r1, _mm_set1_ps(m1[0][1]))),
+                             _mm_mul_ps(r2, _mm_set1_ps(m1[0][2])));
+    __m128 out1 = _mm_add_ps(_mm_add_ps(_mm_mul_ps(r0, _mm_set1_ps(m1[1][0])), _mm_mul_ps(r1, _mm_set1_ps(m1[1][1]))),
+                             _mm_mul_ps(r2, _mm_set1_ps(m1[1][2])));
+    __m128 out2 = _mm_add_ps(_mm_add_ps(_mm_mul_ps(r0, _mm_set1_ps(m1[2][0])), _mm_mul_ps(r1, _mm_set1_ps(m1[2][1]))),
+                             _mm_mul_ps(r2, _mm_set1_ps(m1[2][2])));
+    __m128 out3 = _mm_add_ps(r3, _mm_add_ps(_mm_add_ps(_mm_mul_ps(r0, _mm_set1_ps(m1[3][0])), _mm_mul_ps(r1, _mm_set1_ps(m1[3][1]))),
+                             _mm_mul_ps(r2, _mm_set1_ps(m1[3][2]))));
+
+    float t[4];
+    _mm_storeu_ps(t, out0); val[0][0] = t[0]; val[0][1] = t[1]; val[0][2] = t[2];
+    _mm_storeu_ps(t, out1); val[1][0] = t[0]; val[1][1] = t[1]; val[1][2] = t[2];
+    _mm_storeu_ps(t, out2); val[2][0] = t[0]; val[2][1] = t[1]; val[2][2] = t[2];
+    _mm_storeu_ps(t, out3); val[3][0] = t[0]; val[3][1] = t[1]; val[3][2] = t[2];
+#else
     val[0][0] = m1[0][0] * m2[0][0] + m1[0][1] * m2[1][0] + m1[0][2] * m2[2][0];
     val[1][0] = m1[1][0] * m2[0][0] + m1[1][1] * m2[1][0] + m1[1][2] * m2[2][0];
     val[2][0] = m1[2][0] * m2[0][0] + m1[2][1] * m2[1][0] + m1[2][2] * m2[2][0];
@@ -219,6 +276,7 @@ inline void SkelMat4::Multiply(const SkelMat4& m1, const SkelMat4& m2)
     val[1][2] = m1[1][0] * m2[0][2] + m1[1][1] * m2[1][2] + m1[1][2] * m2[2][2];
     val[2][2] = m1[2][0] * m2[0][2] + m1[2][1] * m2[1][2] + m1[2][2] * m2[2][2];
     val[3][2] = m1[3][0] * m2[0][2] + m1[3][1] * m2[1][2] + m1[3][2] * m2[2][2] + m2[3][2];
+#endif
 }
 
 inline void SkelMat4::InvertAxis(int a)

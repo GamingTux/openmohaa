@@ -45,7 +45,7 @@ class Hud : public Listener
 private:
     unsigned int number; // auto-assigned number
 #ifdef GAME_DLL
-    char clientnum; // assigned client number
+    signed char clientnum; // assigned client number
 #else
     fontHeader_t *font;
     qhandle_t     shaderHandle;

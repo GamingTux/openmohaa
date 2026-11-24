@@ -54,6 +54,7 @@ UpdateChecker::UpdateChecker()
 {
     lastMajor = lastMinor = lastPatch = 0;
     versionChecked                    = false;
+    thread                            = NULL;
 }
 
 UpdateChecker::~UpdateChecker() {}
@@ -105,10 +106,10 @@ bool UpdateChecker::CanHaveRequestThread() const
 
 void UpdateChecker::SetLatestVersion(int major, int minor, int patch)
 {
-    lastMajor = major;
-    lastMinor = minor;
-    lastPatch = patch;
-
+    std::lock_guard<std::mutex> lock(versionMutex);
+    lastMajor      = major;
+    lastMinor      = minor;
+    lastPatch      = patch;
     versionChecked = true;
 }
 
@@ -122,15 +123,16 @@ void UpdateChecker::Process()
         return;
     }
 
-    if (!CheckNewVersion()) {
+    int major, minor, patch;
+    if (!CheckNewVersion(major, minor, patch)) {
         return;
     }
 
     Com_Printf(
         "New release v%d.%d.%d published *\\(^ o ^)/*. Your current version is v%s. See www.openmohaa.org\n",
-        lastMajor,
-        lastMinor,
-        lastPatch,
+        major,
+        minor,
+        patch,
         PRODUCT_VERSION_NUMBER_STRING
     );
 
@@ -147,32 +149,30 @@ void UpdateChecker::Shutdown()
 
 bool UpdateChecker::CheckNewVersion() const
 {
-    if (!versionChecked) {
-        return false;
-    }
-
-    if (lastMajor > PRODUCT_VERSION_MAJOR) {
-        return true;
-    } else if (lastMajor < PRODUCT_VERSION_MAJOR) {
-        return false;
-    }
-
-    if (lastMinor > PRODUCT_VERSION_MINOR) {
-        return true;
-    } else if (lastMinor < PRODUCT_VERSION_MINOR) {
-        return false;
-    }
-
-    if (lastPatch > PRODUCT_VERSION_PATCH) {
-        return true;
-    }
-
-    return false;
+    int major, minor, patch;
+    return CheckNewVersion(major, minor, patch);
 }
 
 bool UpdateChecker::CheckNewVersion(int& major, int& minor, int& patch) const
 {
-    if (!CheckNewVersion()) {
+    std::lock_guard<std::mutex> lock(versionMutex);
+
+    if (!versionChecked) {
+        return false;
+    }
+
+    bool isNewer = false;
+    if (lastMajor > PRODUCT_VERSION_MAJOR) {
+        isNewer = true;
+    } else if (lastMajor == PRODUCT_VERSION_MAJOR) {
+        if (lastMinor > PRODUCT_VERSION_MINOR) {
+            isNewer = true;
+        } else if (lastMinor == PRODUCT_VERSION_MINOR && lastPatch > PRODUCT_VERSION_PATCH) {
+            isNewer = true;
+        }
+    }
+
+    if (!isNewer) {
         return false;
     }
 
@@ -187,8 +187,8 @@ UpdateCheckerThread::UpdateCheckerThread()
 {
     handle                = NULL;
     osThread              = NULL;
-    requestThreadIsActive = qfalse;
-    shouldBeActive        = qfalse;
+    requestThreadIsActive = false;
+    shouldBeActive        = false;
 }
 
 UpdateCheckerThread::~UpdateCheckerThread()
@@ -198,24 +198,21 @@ UpdateCheckerThread::~UpdateCheckerThread()
 
 void UpdateCheckerThread::Init()
 {
-    shouldBeActive        = qtrue;
-    requestThreadIsActive = qtrue;
+    shouldBeActive        = true;
+    requestThreadIsActive = true;
 
     osThread = new std::thread(&UpdateCheckerThread::RequestThread, this);
 }
 
 void UpdateCheckerThread::Shutdown()
 {
-    if (!shouldBeActive) {
+    if (!shouldBeActive.exchange(false)) {
         return;
     }
-
-    shouldBeActive = qfalse;
 
     if (osThread) {
         // Notify and shutdown the thread
         {
-            // Wait until the request thread is ready
             std::lock_guard<std::mutex> l(clientWakeMutex);
             clientWake.notify_all();
         }
@@ -230,7 +227,7 @@ void UpdateCheckerThread::Shutdown()
 
 bool UpdateCheckerThread::IsRoutineActive() const
 {
-    return requestThreadIsActive;
+    return requestThreadIsActive.load();
 }
 
 void UpdateCheckerThread::InitClient()
@@ -263,7 +260,7 @@ void UpdateCheckerThread::InitClient()
     }
 
     curlImport.qcurl_easy_setopt(handle, CURLOPT_USERAGENT, "curl");
-    curlImport.qcurl_easy_setopt(handle, CURLOPT_TIMEOUT, 15);
+    curlImport.qcurl_easy_setopt(handle, CURLOPT_TIMEOUT, 15L);
 #else
     Com_DPrintf("Project was compiled without libcurl, will not check for updates\n");
 #endif
@@ -410,16 +407,20 @@ void UpdateCheckerThread::RequestThread()
     // Initialize the curl client
     InitClient();
 
-    while (handle && shouldBeActive) {
-        std::unique_lock<std::mutex> l(clientWakeMutex);
+    while (handle && shouldBeActive.load()) {
         DoRequest();
+
+        if (!shouldBeActive.load()) {
+            break;
+        }
 
         const std::chrono::seconds interval = std::chrono::seconds(Q_max(1, com_updatecheck_interval->integer) * 60);
 
-        clientWake.wait_for(l, interval);
+        std::unique_lock<std::mutex> l(clientWakeMutex);
+        clientWake.wait_for(l, interval, [this]() { return !shouldBeActive.load(); });
     }
 
     ShutdownClient();
 
-    requestThreadIsActive = qfalse;
+    requestThreadIsActive = false;
 }

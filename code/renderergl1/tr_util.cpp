@@ -124,9 +124,9 @@ void RB_StreamEndDrawSurf(void)
 
     numverts = tess.numVertexes - backEnd.dsStreamVert - 2;
     for (i = 0; i < numverts; i++) {
-        tess.indexes[i + tess.numIndexes]     = (i & 1) + i + backEnd.dsStreamVert;
-        tess.indexes[i + tess.numIndexes + 1] = i + backEnd.dsStreamVert - ((i & 1) - 1);
-        tess.indexes[i + tess.numIndexes + 2] = i + backEnd.dsStreamVert + 2;
+        tess.indexes[tess.numIndexes]     = (i & 1) + i + backEnd.dsStreamVert;
+        tess.indexes[tess.numIndexes + 1] = i + backEnd.dsStreamVert - ((i & 1) - 1);
+        tess.indexes[tess.numIndexes + 2] = i + backEnd.dsStreamVert + 2;
         tess.numIndexes += 3;
     }
 }

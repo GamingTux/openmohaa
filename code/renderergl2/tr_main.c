@@ -572,6 +572,7 @@ void R_RotateForViewer (void)
 	tr.ori.axis[0][0] = 1;
 	tr.ori.axis[1][1] = 1;
 	tr.ori.axis[2][2] = 1;
+	Mat4Identity( tr.ori.transformMatrix );
 	VectorCopy (tr.viewParms.ori.origin, tr.ori.viewOrigin);
 
 	// transform by the camera placement
@@ -1641,6 +1642,82 @@ void R_SortDrawSurfs( drawSurf_t *drawSurfs, int numDrawSurfs,
 		}
 	}
 
+	R_Sky_Render();
+
+	// Pi 5 / TBDR Hardware Early-Z Optimization (100% lossless):
+	// 1. Draw strictly opaque first-person viewmodel surfaces (RF_DEPTHHACK, depth [0..0.3]) FIRST
+	//    so VideoCore VII rejects ~20-25% of hidden world/foliage/water/shadow pixels behind the weapon.
+	// 2. Move skybox (SS_ENVIRONMENT, depthRange 1.0, GL_LEQUAL, no depth write) right AFTER SS_OPAQUE
+	//    so Early-Z rejects all sky pixels occluded behind buildings, terrain and opaque foliage.
+	if ( !tr.viewParms.isPortal && !tr.viewParms.isMirror && !tr.viewParms.isPortalSky
+		&& !( tr.refdef.rdflags & ( RDF_NOWORLDMODEL | RDF_HUD ) ) )
+	{
+		int envStart = -1, envEnd = -1;
+		int opaqueStart = -1, opaqueEnd = -1;
+
+		for ( i = 0; i < numDrawSurfs; i++ ) {
+			R_DecomposeSort( drawSurfs[i].sort, &entityNum, &shader, &fogNum, &dlighted, &pshadowed, &bStaticModel );
+			if ( shader->sort == SS_ENVIRONMENT ) {
+				if ( envStart < 0 ) envStart = i;
+				envEnd = i + 1;
+			} else if ( shader->sort == SS_OPAQUE ) {
+				if ( opaqueStart < 0 ) opaqueStart = i;
+				opaqueEnd = i + 1;
+			} else if ( shader->sort > SS_OPAQUE ) {
+				break;
+			}
+		}
+
+		if ( opaqueStart >= 0 && opaqueEnd > opaqueStart ) {
+			int rangeStart = ( envStart >= 0 && !r_showsky->integer ) ? envStart : opaqueStart;
+			int rangeCount = opaqueEnd - rangeStart;
+			if ( rangeCount > 1 ) {
+				drawSurf_t *tmp = (drawSurf_t *)ri.Hunk_AllocateTempMemory( rangeCount * sizeof( drawSurf_t ) );
+				int out = 0;
+
+				// Group 1: Opaque first-person viewmodels (RF_DEPTHHACK) first for Early-Z occlusion
+				for ( i = opaqueStart; i < opaqueEnd; i++ ) {
+					R_DecomposeSort( drawSurfs[i].sort, &entityNum, &shader, &fogNum, &dlighted, &pshadowed, &bStaticModel );
+					if ( !bStaticModel && entityNum != REFENTITYNUM_WORLD
+						&& ( tr.refdef.entities[entityNum].e.renderfx & RF_DEPTHHACK )
+						&& !( tr.refdef.entities[entityNum].e.renderfx & RF_CROSSHAIR )
+						&& shader->stages[0]
+						&& ( shader->stages[0]->stateBits & GLS_DEPTHMASK_TRUE )
+						&& !( shader->stages[0]->stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS | GLS_ATEST_BITS ) ) )
+					{
+						tmp[out++] = drawSurfs[i];
+					}
+				}
+
+				// Group 2: All remaining SS_OPAQUE surfaces in exact original sorted order
+				for ( i = opaqueStart; i < opaqueEnd; i++ ) {
+					R_DecomposeSort( drawSurfs[i].sort, &entityNum, &shader, &fogNum, &dlighted, &pshadowed, &bStaticModel );
+					if ( !( !bStaticModel && entityNum != REFENTITYNUM_WORLD
+						&& ( tr.refdef.entities[entityNum].e.renderfx & RF_DEPTHHACK )
+						&& !( tr.refdef.entities[entityNum].e.renderfx & RF_CROSSHAIR )
+						&& shader->stages[0]
+						&& ( shader->stages[0]->stateBits & GLS_DEPTHMASK_TRUE )
+						&& !( shader->stages[0]->stateBits & ( GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS | GLS_ATEST_BITS ) ) ) )
+					{
+						tmp[out++] = drawSurfs[i];
+					}
+				}
+
+				// Group 3: SS_ENVIRONMENT skybox right after SS_OPAQUE (before SS_SEE_THROUGH / translucent)
+				if ( envStart >= 0 && !r_showsky->integer ) {
+					for ( i = envStart; i < envEnd; i++ ) {
+						tmp[out++] = drawSurfs[i];
+					}
+				}
+
+				if ( out == rangeCount ) {
+					Com_Memcpy( drawSurfs + rangeStart, tmp, rangeCount * sizeof( drawSurf_t ) );
+				}
+				ri.Hunk_FreeTempMemory( tmp );
+			}
+		}
+	}
+
 	R_AddDrawSurfCmd( drawSurfs, numDrawSurfs );
     R_AddSpriteSurfCmd( spriteSurfs, numSpriteSurfs );
 }
@@ -1666,6 +1743,15 @@ static void R_AddEntitySurface (int entityNum)
 	//
 	if ( (ent->e.renderfx & RF_FIRST_PERSON) && (tr.viewParms.flags & VPF_NOVIEWMODEL)) {
 		return;
+	}
+
+	if ( tr.viewParms.flags & VPF_PISUNSHADOW ) {
+		if ( ent->e.renderfx & ( RF_FIRST_PERSON | RF_DEPTHHACK | RF_SKYENTITY ) ) {
+			return;
+		}
+		if ( ent->e.reType != RT_MODEL ) {
+			return;
+		}
 	}
 
 	// simple generated models, like sprites and beams, are not culled
@@ -1788,7 +1874,12 @@ void R_GenerateDrawSurfs( void ) {
 	//
 	// OPENMOHAA-specific stuff
     //=========================
+    if (!(tr.refdef.rdflags & RDF_NOWORLDMODEL)) {
+        R_AddSwipeSurfaces();
+    }
+
     R_AddSpriteSurfaces();
+    R_AddTerrainMarkSurfaces();
 	//=========================
 }
 
@@ -2099,6 +2190,10 @@ void R_RenderView (viewParms_t *parms) {
 
 	R_SetupProjection(&tr.viewParms, r_zproj->value, tr.viewParms.zFar, qtrue);
 
+	R_Sky_Reset();
+
+	R_DrawDebugStrings();
+
 	R_GenerateDrawSurfs();
 
 	// if we overflowed MAX_DRAWSURFS, the drawsurfs
@@ -2114,6 +2209,7 @@ void R_RenderView (viewParms_t *parms) {
 	);
 
 	// draw main system development information (surface outlines, etc)
+	R_DebugSkeleton();
 	R_DebugGraphics();
 }
 
@@ -2913,6 +3009,185 @@ void R_RenderSunShadowMaps(const refdef_t *fd, int level)
 	}
 }
 
+void R_InvalidatePiSunShadowCache( void )
+{
+	tr.piSunShadowValid = qfalse;
+	tr.piSunShadowLastFrame = -1000;
+	tr.piSunShadowLastMode = 0;
+}
+
+void R_RenderPiSunShadowMap( const refdef_t *fd )
+{
+	viewParms_t shadowParms;
+	vec3_t      sunDir, upRef;
+	vec3_t      lightAxis[3];
+	vec3_t      focusCenter, snappedOrigin;
+	vec3_t      lightviewBounds[2];
+	float       invSunScale, sunLum, radius, texelSize, shadowStrength, subScale, focusLead;
+	float       d0, d1, d2;
+	int         firstDrawSurf, firstSpriteSurf, shadowRes, shadowRate;
+	mat4_t      vpMat, biasMat;
+
+	tr.refdef.piSunShadowActive = qfalse;
+
+	if ( !tr.world || !tr.piSunShadowFbo || !s_sun.exists ) {
+		return;
+	}
+
+	VectorCopy( s_sun.direction, sunDir );
+	if ( VectorNormalize( sunDir ) < 1e-4f || sunDir[2] <= 0.02f ) {
+		return;
+	}
+
+	invSunScale = 1.0f / ( 255.0f * ( tr.overbrightMult > 0.01f ? tr.overbrightMult : 1.0f ) );
+	sunLum = ( s_sun.color[0] * 0.299f + s_sun.color[1] * 0.587f + s_sun.color[2] * 0.114f ) * invSunScale;
+	if ( sunLum < 0.05f ) {
+		return;
+	}
+
+	if ( sunDir[2] < 0.25f ) {
+		sunDir[2] = 0.25f;
+		VectorNormalize( sunDir );
+	}
+
+	// Smart Half-Rate / Motion-Aware Shadow Map Reuse:
+	// Because the shadow map is world-space anchored via piSunShadowCachedMvp,
+	// reusing it on alternate frames introduces zero projection swimming while
+	// halving shadow CPU + GPU cost. Rapid camera movement or fast turns refresh immediately.
+	shadowRate = r_dynamicSunShadowsRate ? r_dynamicSunShadowsRate->integer : 1;
+	if ( shadowRate > 1 && tr.piSunShadowValid && tr.piSunShadowLastMode == r_dynamicSunShadows->integer ) {
+		int age = tr.frameCount - tr.piSunShadowLastFrame;
+		vec3_t moveDelta;
+		float moveDistSq, lookDot;
+
+		VectorSubtract( fd->vieworg, tr.piSunShadowLastOrigin, moveDelta );
+		moveDistSq = VectorLengthSquared( moveDelta );
+		lookDot    = DotProduct( fd->viewaxis[0], tr.piSunShadowLastForward );
+
+		if ( age > 0 && age < shadowRate && moveDistSq < ( 28.0f * 28.0f ) && lookDot > 0.980f ) {
+			Mat4Copy( tr.piSunShadowCachedMvp, tr.refdef.piSunShadowMvp );
+			VectorCopy( tr.piSunShadowCachedDir, tr.refdef.piSunShadowDir );
+			tr.refdef.piSunShadowStrength = tr.piSunShadowCachedStrength;
+			tr.refdef.piSunShadowRadius   = tr.piSunShadowCachedRadius;
+			tr.refdef.piSunShadowRes      = tr.piSunShadowCachedRes;
+			tr.refdef.piSunShadowActive   = qtrue;
+			return;
+		}
+	}
+
+	if ( r_dynamicSunShadows->integer >= 2 ) {
+		shadowRes = tr.piSunShadowFbo->width; // 1024x1024 High Quality
+		radius    = 960.0f;
+		focusLead = 0.48f;
+	} else {
+		shadowRes = ( tr.piSunShadowFbo->width * 3 ) / 4; // 768x768 Balanced Pi 5
+		radius    = 680.0f;
+		focusLead = 0.56f;
+	}
+	subScale = (float)shadowRes / (float)tr.piSunShadowFbo->width;
+
+	shadowStrength = Com_Clamp( 0.28f, 0.56f, 0.24f + sunLum * 0.42f );
+	if ( r_dynamicSunShadows->integer >= 2 ) {
+		shadowStrength = Com_Clamp( 0.34f, 0.65f, shadowStrength * 1.18f );
+	}
+
+	// Build a world-fixed right-handed sun basis so camera rotation causes zero texel shimmer
+	VectorNegate( sunDir, lightAxis[0] );
+	if ( fabsf( lightAxis[0][2] ) > 0.95f ) {
+		VectorSet( upRef, 0.0f, 1.0f, 0.0f );
+	} else {
+		VectorSet( upRef, 0.0f, 0.0f, 1.0f );
+	}
+	CrossProduct( upRef, lightAxis[0], lightAxis[1] );
+	VectorNormalize( lightAxis[1] );
+	CrossProduct( lightAxis[0], lightAxis[1], lightAxis[2] );
+
+	// Center shadow box ahead of camera and snap to exact shadow-map texel increments
+	VectorMA( fd->vieworg, radius * focusLead, fd->viewaxis[0], focusCenter );
+	texelSize = ( 2.0f * radius ) / (float)shadowRes;
+	d0 = floorf( DotProduct( focusCenter, lightAxis[0] ) / 4.0f + 0.5f ) * 4.0f;
+	d1 = floorf( DotProduct( focusCenter, lightAxis[1] ) / texelSize + 0.5f ) * texelSize;
+	d2 = floorf( DotProduct( focusCenter, lightAxis[2] ) / texelSize + 0.5f ) * texelSize;
+
+	VectorScale( lightAxis[0], d0, snappedOrigin );
+	VectorMA( snappedOrigin, d1, lightAxis[1], snappedOrigin );
+	VectorMA( snappedOrigin, d2, lightAxis[2], snappedOrigin );
+
+	lightviewBounds[0][0] = -1800.0f;
+	lightviewBounds[1][0] =  1800.0f;
+	lightviewBounds[0][1] = -radius;
+	lightviewBounds[1][1] =  radius;
+	lightviewBounds[0][2] = -radius;
+	lightviewBounds[1][2] =  radius;
+
+	Com_Memset( &shadowParms, 0, sizeof( shadowParms ) );
+	shadowParms.viewportX      = 0;
+	shadowParms.viewportY      = 0;
+	shadowParms.viewportWidth  = shadowRes;
+	shadowParms.viewportHeight = shadowRes;
+	shadowParms.isPortal       = qfalse;
+	shadowParms.isMirror       = qfalse;
+	shadowParms.fovX           = 90;
+	shadowParms.fovY           = 90;
+	shadowParms.targetFbo      = tr.piSunShadowFbo;
+	shadowParms.flags          = VPF_DEPTHSHADOW | VPF_PISUNSHADOW | VPF_DEPTHCLAMP | VPF_ORTHOGRAPHIC | VPF_NOVIEWMODEL;
+	shadowParms.zFar           = lightviewBounds[1][0];
+
+	VectorCopy( snappedOrigin, shadowParms.ori.origin );
+	VectorCopy( lightAxis[0],  shadowParms.ori.axis[0] );
+	VectorCopy( lightAxis[1],  shadowParms.ori.axis[1] );
+	VectorCopy( lightAxis[2],  shadowParms.ori.axis[2] );
+	VectorCopy( fd->vieworg,   shadowParms.pvsOrigin );
+
+	// Publish sunDir before culling so static model shadow culling can test sun-extruded reach
+	VectorCopy( sunDir, tr.refdef.piSunShadowDir );
+
+	tr.viewCount++;
+	tr.viewParms               = shadowParms;
+	tr.viewParms.frameSceneNum = tr.frameSceneNum;
+	tr.viewParms.frameCount    = tr.frameCount;
+
+	firstDrawSurf   = tr.refdef.numDrawSurfs;
+	firstSpriteSurf = tr.refdef.numSpriteSurfs;
+
+	R_RotateForViewer();
+	R_SetupProjectionOrtho( &tr.viewParms, lightviewBounds );
+
+	R_AddWorldSurfaces();
+	R_AddEntitySurfaces();
+
+	R_SortDrawSurfs( tr.refdef.drawSurfs + firstDrawSurf, tr.refdef.numDrawSurfs - firstDrawSurf,
+		tr.refdef.spriteSurfs + firstSpriteSurf, tr.refdef.numSpriteSurfs - firstSpriteSurf );
+
+	Mat4Zero( biasMat );
+	biasMat[0]  = 0.5f * subScale;
+	biasMat[5]  = 0.5f * subScale;
+	biasMat[10] = 0.5f;
+	biasMat[12] = 0.5f * subScale;
+	biasMat[13] = 0.5f * subScale;
+	biasMat[14] = 0.5f;
+	biasMat[15] = 1.0f;
+
+	Mat4Multiply( tr.viewParms.projectionMatrix, tr.viewParms.world.modelMatrix, vpMat );
+	Mat4Multiply( biasMat, vpMat, tr.refdef.piSunShadowMvp );
+	tr.refdef.piSunShadowStrength = shadowStrength;
+	tr.refdef.piSunShadowRadius   = radius;
+	tr.refdef.piSunShadowRes      = shadowRes;
+	tr.refdef.piSunShadowActive   = qtrue;
+
+	// Save world-anchored shadow cache for optional half-rate reuse
+	Mat4Copy( tr.refdef.piSunShadowMvp, tr.piSunShadowCachedMvp );
+	VectorCopy( sunDir, tr.piSunShadowCachedDir );
+	tr.piSunShadowCachedStrength = shadowStrength;
+	tr.piSunShadowCachedRadius   = radius;
+	tr.piSunShadowCachedRes      = shadowRes;
+	VectorCopy( fd->vieworg, tr.piSunShadowLastOrigin );
+	VectorCopy( fd->viewaxis[0], tr.piSunShadowLastForward );
+	tr.piSunShadowLastFrame = tr.frameCount;
+	tr.piSunShadowLastMode  = r_dynamicSunShadows->integer;
+	tr.piSunShadowValid     = qtrue;
+}
+
 void R_RenderCubemapSide( int cubemapIndex, int cubemapSide, qboolean subscene )
 {
 	refdef_t refdef;
@@ -3178,6 +3453,7 @@ void R_RotateForStaticModel( cStaticModelUnpacked_t *SM, const viewParms_t *view
 	glMatrix[11] = 0;
 	glMatrix[15] = 1;
 
+	Mat4Copy( glMatrix, ori->transformMatrix );
 	myGlMultMatrix( glMatrix, viewParms->world.modelMatrix, ori->modelMatrix );
 
 	// calculate the viewer origin in the model's space
@@ -3228,7 +3504,7 @@ qboolean SurfIsOffscreen2(const srfBspSurface_t* surface, shader_t* shader, int 
 	int numTriangles;
 	qboolean doRange;
 	orientationr_t surfOr;
-	unsigned int* indices;
+	glIndex_t* indices;
 	vec4_t clip, eye;
 	int i;
 	unsigned int pointOr = 0;
@@ -3284,14 +3560,13 @@ qboolean SurfIsOffscreen2(const srfBspSurface_t* surface, shader_t* shader, int 
 	// we have in the game right now.
 	numTriangles = surface->numIndexes / 3;
 
+	indices = surface->indexes;
+
 	for ( i = 0; i < surface->numIndexes; i += 3 )
 	{
 		vec3_t normal;
 		float dot;
 		float len;
-		unsigned* indices;
-
-		indices = surface->indexes; // (unsigned*)(((char*)surface) + surface->ofsIndices);
 
 		VectorSubtract( surface->verts[indices[i]].xyz, surfOr.viewOrigin, normal);
 

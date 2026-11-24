@@ -262,24 +262,8 @@ static	void R_LoadLightmaps( lump_t *l, lump_t *surfs ) {
 	tr.lightmapSize = DEFAULT_LIGHTMAP_SIZE;
 	numLightmaps = len / (tr.lightmapSize * tr.lightmapSize * 3);
 
-	// check for deluxe mapping
-	if (numLightmaps <= 1)
-	{
-		tr.worldDeluxeMapping = qfalse;
-	}
-	else
-	{
-		tr.worldDeluxeMapping = qtrue;
-		for( i = 0, surf = (dsurface_t *)(fileBase + surfs->fileofs);
-			i < surfs->filelen / sizeof(dsurface_t); i++, surf++ ) {
-			int lightmapNum = LittleLong( surf->lightmapNum );
-
-			if ( lightmapNum >= 0 && (lightmapNum & 1) != 0 ) {
-				tr.worldDeluxeMapping = qfalse;
-				break;
-			}
-		}
-	}
+	// MOHAA BSPs do not contain Quake 3 deluxemaps (even-only BSP lightmaps can occur when terrain uses odd indices)
+	tr.worldDeluxeMapping = qfalse;
 
 	image = ri.Malloc(tr.lightmapSize * tr.lightmapSize * 4 * 2);
 
@@ -2737,6 +2721,7 @@ void R_CalcVertexLightDirs( void )
 {
 	int i, k;
 	msurface_t *surface;
+	qboolean fastLight = !( r_normalMapping->integer || r_specularMapping->integer );
 
 	for(k = 0, surface = &s_worldData.surfaces[0]; k < s_worldData.numsurfaces /* s_worldData.numWorldSurfaces */; k++, surface++)
 	{
@@ -2747,14 +2732,24 @@ void R_CalcVertexLightDirs( void )
 			case SF_FACE:
 			case SF_GRID:
 			case SF_TRIANGLES:
-				for(i = 0; i < bspSurf->numVerts; i++)
+				if ( fastLight )
 				{
-					vec3_t lightDir;
-					vec3_t normal;
+					for(i = 0; i < bspSurf->numVerts; i++)
+					{
+						VectorCopy4(bspSurf->verts[i].normal, bspSurf->verts[i].lightdir);
+					}
+				}
+				else
+				{
+					for(i = 0; i < bspSurf->numVerts; i++)
+					{
+						vec3_t lightDir;
+						vec3_t normal;
 
-					R_VaoUnpackNormal(normal, bspSurf->verts[i].normal);
-					R_LightDirForPoint( bspSurf->verts[i].xyz, lightDir, normal, &s_worldData );
-					R_VaoPackNormal(bspSurf->verts[i].lightdir, lightDir);
+						R_VaoUnpackNormal(normal, bspSurf->verts[i].normal);
+						R_LightDirForPoint( bspSurf->verts[i].xyz, lightDir, normal, &s_worldData );
+						R_VaoPackNormal(bspSurf->verts[i].lightdir, lightDir);
+					}
 				}
 
 				break;
@@ -2969,8 +2964,8 @@ void R_UnpackTerraPatch(cTerraPatch_t* pPacked, cTerraPatchUnpacked_t* pUnpacked
 
     pUnpacked->drawinfo.lmapStep = (float)(64 / pPacked->lmapScale);
     pUnpacked->drawinfo.lmapSize = pPacked->lmapScale * 8 + 1;
-    pUnpacked->s = ((float)pPacked->s + 0.5) / LIGHTMAP_SIZE;
-    pUnpacked->t = ((float)pPacked->t + 0.5) / LIGHTMAP_SIZE;
+    pUnpacked->s = FatPackU(((float)pPacked->s + 0.5f) / LIGHTMAP_SIZE, pPacked->iLightMap);
+    pUnpacked->t = FatPackV(((float)pPacked->t + 0.5f) / LIGHTMAP_SIZE, pPacked->iLightMap);
     pUnpacked->drawinfo.lmData = NULL;
 
     for (i = 0; i < 2; i++) {
@@ -3401,6 +3396,7 @@ void RE_LoadWorldMap( const char *name ) {
 	//
 	// OPENMOHAA-specific stuff
 	//=========================
+	R_LoadEntities(Q_GetLumpByVersion(header, LUMP_ENTITIES));
 	_R(53);
     _R(54);
     R_LoadShaders(Q_GetLumpByVersion(header, LUMP_SHADERS));
@@ -3861,6 +3857,18 @@ void R_ClearWorld(void) {
             ri.Hunk_FreeTempMemory(tr.world->visStaticModels);
         }
     }
+
+    R_FreeStaticModelVao();
+    R_InvalidatePiSunShadowCache();
+    tr.drsEmaMs        = 0.0f;
+    tr.drsLastMs       = 0;
+    R_InvalidateLightmapShaders();
+    R_FreeLightmapImages();
+    tr.lightmaps       = NULL;
+    tr.deluxemaps      = NULL;
+    tr.numLightmaps    = 0;
+    tr.fatLightmapCols = 0;
+    tr.fatLightmapRows = 0;
 
     tr.world          = NULL;
     tr.worldMapLoaded = qfalse;

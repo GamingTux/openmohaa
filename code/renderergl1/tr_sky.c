@@ -376,23 +376,55 @@ static float	s_skyTexCoords[SKY_SUBDIVISIONS+1][SKY_SUBDIVISIONS+1][2];
 static void DrawSkySide( struct image_s *image, const int mins[2], const int maxs[2] )
 {
 	int s, t;
+	vec3_t verts[(SKY_SUBDIVISIONS + 1) * (SKY_SUBDIVISIONS + 1) * 6];
+	vec2_t texcoords[(SKY_SUBDIVISIONS + 1) * (SKY_SUBDIVISIONS + 1) * 6];
+	int numVerts = 0;
 
 	GL_Bind( image );
 
 	for ( t = mins[1]+HALF_SKY_SUBDIVISIONS; t < maxs[1]+HALF_SKY_SUBDIVISIONS; t++ )
 	{
-		qglBegin( GL_TRIANGLE_STRIP );
-
-		for ( s = mins[0]+HALF_SKY_SUBDIVISIONS; s <= maxs[0]+HALF_SKY_SUBDIVISIONS; s++ )
+		for ( s = mins[0]+HALF_SKY_SUBDIVISIONS; s < maxs[0]+HALF_SKY_SUBDIVISIONS; s++ )
 		{
-			qglTexCoord2fv( s_skyTexCoords[t][s] );
-			qglVertex3fv( s_skyPoints[t][s] );
+			VectorCopy( s_skyPoints[t][s], verts[numVerts] );
+			texcoords[numVerts][0] = s_skyTexCoords[t][s][0];
+			texcoords[numVerts][1] = s_skyTexCoords[t][s][1];
+			numVerts++;
 
-			qglTexCoord2fv( s_skyTexCoords[t+1][s] );
-			qglVertex3fv( s_skyPoints[t+1][s] );
+			VectorCopy( s_skyPoints[t+1][s], verts[numVerts] );
+			texcoords[numVerts][0] = s_skyTexCoords[t+1][s][0];
+			texcoords[numVerts][1] = s_skyTexCoords[t+1][s][1];
+			numVerts++;
+
+			VectorCopy( s_skyPoints[t][s+1], verts[numVerts] );
+			texcoords[numVerts][0] = s_skyTexCoords[t][s+1][0];
+			texcoords[numVerts][1] = s_skyTexCoords[t][s+1][1];
+			numVerts++;
+
+			VectorCopy( s_skyPoints[t+1][s], verts[numVerts] );
+			texcoords[numVerts][0] = s_skyTexCoords[t+1][s][0];
+			texcoords[numVerts][1] = s_skyTexCoords[t+1][s][1];
+			numVerts++;
+
+			VectorCopy( s_skyPoints[t+1][s+1], verts[numVerts] );
+			texcoords[numVerts][0] = s_skyTexCoords[t+1][s+1][0];
+			texcoords[numVerts][1] = s_skyTexCoords[t+1][s+1][1];
+			numVerts++;
+
+			VectorCopy( s_skyPoints[t][s+1], verts[numVerts] );
+			texcoords[numVerts][0] = s_skyTexCoords[t][s+1][0];
+			texcoords[numVerts][1] = s_skyTexCoords[t][s+1][1];
+			numVerts++;
 		}
+	}
 
-		qglEnd();
+	if ( numVerts > 0 ) {
+		qglDisableClientState( GL_COLOR_ARRAY );
+		qglEnableClientState( GL_TEXTURE_COORD_ARRAY );
+		qglVertexPointer( 3, GL_FLOAT, 0, verts );
+		qglTexCoordPointer( 2, GL_FLOAT, 0, texcoords );
+		qglDrawArrays( GL_TRIANGLES, 0, numVerts );
+		qglVertexPointer( 3, GL_FLOAT, 16, tess.xyz );
 	}
 }
 

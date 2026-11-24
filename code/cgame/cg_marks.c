@@ -903,12 +903,26 @@ void CG_AddMarks(void)
     polyVert_t  tmpVerts[8];
     int         viewleafnum;
 
+    int         markTotalTime;
+    int         markFadeOutTime;
+
     if (!cg_bMarksInitialized) {
         return;
     }
 
     if (!cg_addMarks->integer) {
         return;
+    }
+
+    if (cg_marks_lifetime && cg_marks_lifetime->value > 0.0f) {
+        float lifeSec = (cg_marks_lifetime->value < 5.0f)
+                            ? 45.0f
+                            : Com_Clamp(5.0f, 300.0f, cg_marks_lifetime->value);
+        markTotalTime   = (int)(lifeSec * 1000.0f);
+        markFadeOutTime = (markTotalTime > 6000) ? 3000 : MARK_FADE_TIME;
+    } else {
+        markTotalTime   = MARK_TOTAL_TIME;
+        markFadeOutTime = MARK_FADE_TIME;
     }
 
     viewleafnum = cgi.CM_PointLeafnum(cg.refdef.vieworg);
@@ -918,7 +932,7 @@ void CG_AddMarks(void)
         pNext = pMark->nextMark;
 
         // see if it is time to completely remove it
-        if (pMark->alphaFade && cg.time > pMark->time + MARK_TOTAL_TIME) {
+        if (pMark->alphaFade && cg.time > pMark->time + markTotalTime) {
             CG_FreeMarkObj(pMark);
             continue;
         }
@@ -962,9 +976,12 @@ void CG_AddMarks(void)
         }
 
         if (pMark->alphaFade) {
-            t = pMark->time + MARK_TOTAL_TIME - cg.time;
-            if (t < MARK_FADE_TIME) {
-                fade = 255 * t / MARK_FADE_TIME;
+            t = pMark->time + markTotalTime - cg.time;
+            if (t < markFadeOutTime) {
+                fade = 255 * t / markFadeOutTime;
+                if (fade < 0) {
+                    fade = 0;
+                }
                 for (pPoly = pMark->markPolys; pPoly; pPoly = pPoly->nextPoly) {
                     for (j = 0; j < pPoly->numVerts; j++) {
                         pPoly->verts[j].modulate[3] = fade;

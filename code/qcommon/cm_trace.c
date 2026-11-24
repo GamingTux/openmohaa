@@ -28,7 +28,20 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 //#define CAPSULE_DEBUG
 
-sphere_t sphere;
+Q_TLS sphere_t sphere;
+
+int CM_GetThreadId( void ) {
+	static Q_TLS int cm_tls_tid = -1;
+	static int cm_next_tid = 0;
+	if ( cm_tls_tid < 0 ) {
+#if defined(__GNUC__) || defined(__clang__)
+		cm_tls_tid = __atomic_fetch_add( &cm_next_tid, 1, __ATOMIC_RELAXED ) & ( MAX_CM_THREADS - 1 );
+#else
+		cm_tls_tid = ( cm_next_tid++ ) & ( MAX_CM_THREADS - 1 );
+#endif
+	}
+	return cm_tls_tid;
+}
 
 /*
 ===============================================================================
@@ -233,15 +246,17 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 	cbrush_t	*b;
 	cPatch_t	*patch;
 	cTerrain_t	*terrain;
+	const int	tid = CM_GetThreadId();
+	const int	checkcount = cm.checkcount[tid];
 
 	// test box position against all brushes in the leaf
 	for (k=0 ; k<leaf->numLeafBrushes ; k++) {
 		brushnum = cm.leafbrushes[leaf->firstLeafBrush+k];
 		b = &cm.brushes[brushnum];
-		if (b->checkcount == cm.checkcount) {
+		if (b->checkcount[tid] == checkcount) {
 			continue;	// already checked this brush in another leaf
 		}
-		b->checkcount = cm.checkcount;
+		b->checkcount[tid] = checkcount;
 
 		if ( !(b->contents & tw->contents)) {
 			continue;
@@ -264,10 +279,10 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 			if ( !patch ) {
 				continue;
 			}
-			if ( patch->checkcount == cm.checkcount ) {
+			if ( patch->checkcount[tid] == checkcount ) {
 				continue;	// already checked this brush in another leaf
 			}
-			patch->checkcount = cm.checkcount;
+			patch->checkcount[tid] = checkcount;
 
 			if ( !(patch->contents & tw->contents)) {
 				continue;
@@ -286,10 +301,10 @@ void CM_TestInLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 		if( !terrain ) {
 			continue;
 		}
-		if( terrain->checkcount == cm.checkcount ) {
+		if( terrain->checkcount[tid] == checkcount ) {
 			continue;
 		}
-		terrain->checkcount = cm.checkcount;
+		terrain->checkcount[tid] = checkcount;
 
 		if( CM_PositionTestInTerrainCollide( tw, &terrain->tc ) ) {
 			tw->trace.fraction = 0;
@@ -432,12 +447,12 @@ void CM_PositionTest( traceWork_t *tw ) {
 	ll.lastLeaf = 0;
 	ll.overflowed = qfalse;
 
-	cm.checkcount++;
+	cm.checkcount[CM_GetThreadId()]++;
 
 	CM_BoxLeafnums_r( &ll, 0 );
 
 
-	cm.checkcount++;
+	cm.checkcount[CM_GetThreadId()]++;
 
 	// test the contents of the leafs
 	for (i=0 ; i < ll.count ; i++) {
@@ -780,14 +795,16 @@ void CM_TraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 	cbrush_t *b;
 	cPatch_t *patch;
 	cTerrain_t *terrain;
+	const int tid = CM_GetThreadId();
+	const int checkcount = cm.checkcount[tid];
 
 	// test box position against all brushes in the leaf
 	for( k = 0; k<leaf->numLeafBrushes; k++ ) {
 		b = &cm.brushes[ cm.leafbrushes[ leaf->firstLeafBrush + k ] ];
-		if( b->checkcount == cm.checkcount ) {
+		if( b->checkcount[tid] == checkcount ) {
 			continue;	// already checked this brush in another leaf
 		}
-		b->checkcount = cm.checkcount;
+		b->checkcount[tid] = checkcount;
 
 		if( !( b->contents & tw->contents ) ) {
 			continue;
@@ -810,10 +827,10 @@ void CM_TraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 			if( !patch ) {
 				continue;
 			}
-			if( patch->checkcount == cm.checkcount ) {
+			if( patch->checkcount[tid] == checkcount ) {
 				continue;	// already checked this brush in another leaf
 			}
-			patch->checkcount = cm.checkcount;
+			patch->checkcount[tid] = checkcount;
 
 			if( !( patch->contents & tw->contents ) ) {
 				continue;
@@ -832,10 +849,10 @@ void CM_TraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 		if( !terrain ) {
 			continue;
 		}
-		if( terrain->checkcount == cm.checkcount ) {
+		if( terrain->checkcount[tid] == checkcount ) {
 			continue;
 		}
-		terrain->checkcount = cm.checkcount;
+		terrain->checkcount[tid] = checkcount;
 
 		CM_TraceThroughTerrain( tw, terrain );
 		if( !tw->trace.fraction ) {
@@ -1267,7 +1284,7 @@ void CM_BoxTrace( trace_t *results, const vec3_t start, const vec3_t end,
 
 	cmod = CM_ClipHandleToModel( model );
 
-	cm.checkcount++;		// for multi-check avoidance
+	cm.checkcount[CM_GetThreadId()]++;		// for multi-check avoidance
 
 	c_traces++;				// for statistics, may be zeroed
 
@@ -1777,14 +1794,16 @@ qboolean CM_SightTraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 	cbrush_t *b;
 	cPatch_t *patch;
 	cTerrain_t *terrain;
+	const int tid = CM_GetThreadId();
+	const int checkcount = cm.checkcount[tid];
 
 	// test box position against all brushes in the leaf
 	for( k = 0; k<leaf->numLeafBrushes; k++ ) {
 		b = &cm.brushes[ cm.leafbrushes[ leaf->firstLeafBrush + k ] ];
-		if( b->checkcount == cm.checkcount ) {
+		if( b->checkcount[tid] == checkcount ) {
 			continue;	// already checked this brush in another leaf
 		}
-		b->checkcount = cm.checkcount;
+		b->checkcount[tid] = checkcount;
 
 		if( !( b->contents & tw->contents ) ) {
 			continue;
@@ -1806,10 +1825,10 @@ qboolean CM_SightTraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 			if( !patch ) {
 				continue;
 			}
-			if( patch->checkcount == cm.checkcount ) {
+			if( patch->checkcount[tid] == checkcount ) {
 				continue;	// already checked this brush in another leaf
 			}
-			patch->checkcount = cm.checkcount;
+			patch->checkcount[tid] = checkcount;
 
 			if( !( patch->contents & tw->contents ) ) {
 				continue;
@@ -1827,10 +1846,10 @@ qboolean CM_SightTraceToLeaf( traceWork_t *tw, cLeaf_t *leaf ) {
 		if( !terrain ) {
 			continue;
 		}
-		if( terrain->checkcount == cm.checkcount ) {
+		if( terrain->checkcount[tid] == checkcount ) {
 			continue;
 		}
-		terrain->checkcount = cm.checkcount;
+		terrain->checkcount[tid] = checkcount;
 
 		if( !CM_SightTraceThroughTerrain( tw, terrain ) ) {
 			return qfalse;
@@ -1968,7 +1987,7 @@ qboolean CM_BoxSightTrace( const vec3_t start, const vec3_t end, const vec3_t mi
 
 	cmod = CM_ClipHandleToModel( model );
 
-	cm.checkcount++;		// for multi-check avoidance
+	cm.checkcount[CM_GetThreadId()]++;		// for multi-check avoidance
 
 	c_traces++;				// for statistics, may be zeroed
 

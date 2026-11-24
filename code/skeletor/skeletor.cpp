@@ -1072,20 +1072,27 @@ float DecodeFrameValue(skanChannelHdr *channelFrames, int desiredFrameNum)
 {
     skanGameFrame *foundFrame;
     size_t         frameSize;
-    int            i;
+    int            nFrames = channelFrames->nFramesInChannel;
+
+    if (nFrames <= 1) {
+        return channelFrames->ary_frames->pChannelData[0];
+    }
 
     frameSize = (sizeof(skanGameFrame) - sizeof(skanGameFrame::pChannelData) + sizeof(float));
 
-    foundFrame = channelFrames->ary_frames;
-
-    for (i = 0; i < channelFrames->nFramesInChannel; i++) {
-        if (foundFrame->nFrameNum >= desiredFrameNum) {
-            break;
+    int lo = 0;
+    int hi = nFrames - 1;
+    while (lo < hi) {
+        int            mid      = (lo + hi) >> 1;
+        skanGameFrame *midFrame = (skanGameFrame *)((byte *)channelFrames->ary_frames + mid * frameSize);
+        if (midFrame->nFrameNum < desiredFrameNum) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
         }
-
-        foundFrame = (skanGameFrame *)((byte *)foundFrame + frameSize);
     }
 
+    foundFrame = (skanGameFrame *)((byte *)channelFrames->ary_frames + lo * frameSize);
     if (foundFrame->nFrameNum > desiredFrameNum) {
         foundFrame = (skanGameFrame *)((byte *)channelFrames->ary_frames + foundFrame->nPrevFrameIndex * frameSize);
     }

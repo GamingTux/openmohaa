@@ -33,6 +33,13 @@ extern "C" {
 #define	BOX_MODEL_HANDLE		(MAX_SUBMODELS-1)
 #define CAPSULE_MODEL_HANDLE	510
 #define MAX_OBFUSCATIONS		1024
+#define MAX_CM_THREADS			8
+
+#if defined(_MSC_VER)
+#define Q_TLS __declspec(thread)
+#else
+#define Q_TLS __thread
+#endif
 
 typedef struct {
 	cplane_t	*plane;
@@ -90,12 +97,12 @@ typedef struct {
 	vec3_t		bounds[2];
 	int			numsides;
 	cbrushside_t	*sides;
-	int			checkcount;		// to avoid repeated testings
+	int			checkcount[MAX_CM_THREADS];		// to avoid repeated testings (per-thread)
 } cbrush_t;
 
 
 typedef struct {
-	int			checkcount;				// to avoid repeated testings
+	int			checkcount[MAX_CM_THREADS];		// to avoid repeated testings (per-thread)
 	int			surfaceFlags;
 	int			contents;
 
@@ -106,7 +113,7 @@ typedef struct {
 } cPatch_t;
 
 typedef struct {
-	int checkcount;
+	int checkcount[MAX_CM_THREADS];
 	int surfaceFlags;
 	int contents;
 	int shaderNum;
@@ -120,7 +127,7 @@ typedef struct {
 
 // IneQuation
 typedef struct {
-	int			checkcount;				// to avoid repeated testings
+	int			checkcount[MAX_CM_THREADS];		// to avoid repeated testings (per-thread)
 
 	struct terPatchCollide_s	*tc;
 } cterPatch_t;
@@ -182,7 +189,7 @@ typedef struct {
 	cTerrain_t		*terrain;
 
 	int				floodvalid;
-	int				checkcount;					// incremented on each trace
+	int				checkcount[MAX_CM_THREADS];	// incremented on each trace (per-thread)
 } clipMap_t;
 
 
@@ -240,7 +247,9 @@ extern	cvar_t		*cm_playerCurveClip;
 extern	cvar_t		*cm_FCMcacheall;
 extern	cvar_t		*cm_FCMdebug;
 extern	cvar_t		*cm_ter_usesphere;
-extern	sphere_t	sphere;
+extern	Q_TLS sphere_t	sphere;
+
+int CM_GetThreadId( void );
 
 
 int CM_BoxBrushes( const vec3_t mins, const vec3_t maxs, cbrush_t **list, int listsize );

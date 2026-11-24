@@ -30,6 +30,8 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 #include "tr_dsa.h"
 
+qglInvalidateFramebuffer_t qglInvalidateFramebuffer_ext = NULL;
+
 void GLimp_InitExtraExtensions(void)
 {
 	char *extension;
@@ -347,7 +349,70 @@ void GLimp_InitExtraExtensions(void)
 		ri.Printf(PRINT_ALL, result[2], extension);
 	}
 
+	// GL_ARB_buffer_storage + GL_ARB_draw_elements_base_vertex + GL_ARB_sync
+	// Enables zero-syscall persistent coherent mapped streaming ring buffer for tess.vao
+	// Also checks core OpenGL 3.2 / 4.4 versions for strict Core Profile drivers (macOS / Windows / Linux x86)
+	glRefConfig.persistentRing = qfalse;
+	if ((QGL_VERSION_ATLEAST(4, 4) || SDL_GL_ExtensionSupported("GL_ARB_buffer_storage"))
+		&& (q_gl_version_at_least_3_2 || SDL_GL_ExtensionSupported("GL_ARB_draw_elements_base_vertex"))
+		&& (q_gl_version_at_least_3_2 || SDL_GL_ExtensionSupported("GL_ARB_sync"))
+		&& qglMapBufferRange)
+	{
+		QGL_PERSISTENT_RING_PROCS;
+		if (qglBufferStorage && qglDrawElementsBaseVertex && qglFenceSync && qglClientWaitSync && qglDeleteSync)
+		{
+			glRefConfig.persistentRing = qtrue;
+			ri.Printf(PRINT_ALL, "...using GL_ARB_buffer_storage persistent ring buffer\n");
+		}
+	}
+
 done:
+
+	// GL_ARB_invalidate_subdata / GLES 3.0 glInvalidateFramebuffer
+	// Lets TBDR GPUs (e.g. Raspberry Pi 5 VideoCore VII) discard offscreen depth/scratch tiles
+	// on-chip without flushing unused buffers to RAM.
+	glRefConfig.invalidateFramebuffer = qfalse;
+	qglInvalidateFramebuffer_ext = NULL;
+	if (qglesMajorVersion >= 3 || QGL_VERSION_ATLEAST(4, 3) || SDL_GL_ExtensionSupported("GL_ARB_invalidate_subdata"))
+	{
+		qglInvalidateFramebuffer_ext = (qglInvalidateFramebuffer_t)SDL_GL_GetProcAddress("glInvalidateFramebuffer");
+		if (qglInvalidateFramebuffer_ext)
+		{
+			glRefConfig.invalidateFramebuffer = qtrue;
+			ri.Printf(PRINT_ALL, "...using GL_ARB_invalidate_subdata\n");
+		}
+	}
+
+	// GL_EXT_shader_framebuffer_fetch (TBDR GPUs only)
+	// Allows single-pass on-chip Filmic Tonemapping straight inside FBO 0 tile memory on TBDR GPUs
+	// (Broadcom V3D, Apple, Mali/Panfrost, Adreno/Freedreno, PowerVR, Vivante, Asahi) with zero offscreen FBO overhead.
+	// Desktop immediate-mode GPUs (NVIDIA/AMD/Intel x86) use the standard tr.renderFbo path instead.
+	glRefConfig.framebufferFetch = qfalse;
+	if (SDL_GL_ExtensionSupported("GL_EXT_shader_framebuffer_fetch"))
+	{
+		const char *rendererStr = (const char *)qglGetString(GL_RENDERER);
+		const char *vendorStr   = (const char *)qglGetString(GL_VENDOR);
+		qboolean isTbdrGpu      = (qglesMajorVersion >= 2) ? qtrue : qfalse;
+		if (rendererStr && (Q_stristr(rendererStr, "V3D") || Q_stristr(rendererStr, "VideoCore")
+			|| Q_stristr(rendererStr, "Apple") || Q_stristr(rendererStr, "Mali")
+			|| Q_stristr(rendererStr, "Panfrost") || Q_stristr(rendererStr, "Adreno")
+			|| Q_stristr(rendererStr, "FD") || Q_stristr(rendererStr, "PowerVR")
+			|| Q_stristr(rendererStr, "Vivante") || Q_stristr(rendererStr, "Asahi")))
+		{
+			isTbdrGpu = qtrue;
+		}
+		if (vendorStr && (Q_stristr(vendorStr, "Broadcom") || Q_stristr(vendorStr, "Apple")
+			|| Q_stristr(vendorStr, "ARM") || Q_stristr(vendorStr, "Qualcomm")
+			|| Q_stristr(vendorStr, "Imagination")))
+		{
+			isTbdrGpu = qtrue;
+		}
+		if (isTbdrGpu)
+		{
+			glRefConfig.framebufferFetch = qtrue;
+			ri.Printf(PRINT_ALL, "...using GL_EXT_shader_framebuffer_fetch\n");
+		}
+	}
 
 	// Determine GLSL version
 	if (1)

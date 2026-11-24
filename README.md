@@ -22,6 +22,23 @@ Powered by [ioquake3](https://github.com/ioquake/ioq3) and the [F.A.K.K SDK](htt
 
 *OpenMoHAA is an independent project and is not affiliated with or endorsed by Electronic Arts.*
 
+## Remaster Edition Highlights
+
+This fork extends OpenMoHAA's OpenGL 2 renderer, audio engine, and gameplay systems with modern graphics, 3D room acoustics, and multi-core/SIMD optimizations across **x86_64, ARM64 (including Raspberry Pi 5 / Apple Silicon), Windows, Linux, and macOS** — while remaining 100% compatible with original game assets and savegames:
+
+- **Built-In `REMASTER` Menu (`Options -> REMASTER`):** 1-click presets (`ULTRA (GL2)`, `PERFORMANCE`, `AUTO-DRS 45 FPS`, `CLASSIC GL1`) and live in-game toggles with zero external UI files required.
+- **OpenGL 2 Visual Overhaul:**
+  - Real-time directional sun shadows (`r_dynamicSunShadows`, `r_dynamicSunShadowsRate`)
+  - Per-pixel Blinn-Phong + metallic/Fresnel model lighting (`r_modelPerPixelLighting`)
+  - Animated refractive/reflective water with sky Fresnel & sun glint (`r_modernWater`)
+  - Material-aware world micro-relief, specular & grazing Fresnel (`r_worldMicroRelief`)
+  - GPU vertex foliage & flag wind synchronized with sun shadows (`r_foliageWind`)
+  - Emissive window/lantern glow (`r_emissiveGlow`) & per-chapter cinema color grading (`r_mapAtmosphere`)
+  - Modern dynamic lights (`r_modernDlights`), soft depth-faded particles (`r_softParticles`), Cinema Bloom (`r_bloom`), cubic Filmic Tonemapping (`r_filmicTonemap`), Contrast-Adaptive Sharpening (`r_sharpen`), and Dynamic Resolution Scaling (`r_dynamicResolution`)
+- **OpenAL EFX 3D Room Reverb (`s_reverb 1`):** Full `ALC_EXT_EFX` (`AL_EFFECT_EAXREVERB`) implementation mapping all 26 original EAX acoustic presets.
+- **Gameplay & Immersion:** Extended client draw distance (`cg_extendedFarplane`), higher model/terrain LOD (`r_extendedLod`), persistent 45s battle marks (`cg_marks_lifetime`), modern weapon feel & muzzle light (`cg_modernGunplay`), widescreen circular binoculars fix, and savegame-compatible fair AI (`g_aiFairness`).
+- **Performance & Architecture:** Multi-threaded renderer front-end worker pool (`tr_threadpool`), persistent GPU static-model VAOs, zero-syscall `GL_ARB_buffer_storage` streaming ring buffer, ARM64 NEON + x86 SSE SIMD skeletal math, and TBDR on-chip `GL_EXT_shader_framebuffer_fetch` fast paths (`-DOPTIMIZE_PI5=ON` / `-DOPTIMIZE_NATIVE=ON`).
+
 ## Getting started
 
 - 📦 [Installing OpenMoHAA](docs/markdown/01-intro/01-installation.md)

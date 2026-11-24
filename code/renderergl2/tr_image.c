@@ -2923,8 +2923,7 @@ void R_CreateBuiltinImages( void ) {
 
 		tr.renderImage = R_CreateImage("_render", NULL, width, height, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, hdrFormat);
 
-		if (r_shadowBlur->integer || r_hdr->integer)
-			tr.screenScratchImage = R_CreateImage("screenScratch", NULL, width, height, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, rgbFormat);
+		tr.screenScratchImage = R_CreateImage("screenScratch", NULL, width, height, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, hdrFormat);
 
 		if (r_shadowBlur->integer || r_ssao->integer)
 			tr.hdrDepthImage = R_CreateImage("*hdrDepth", NULL, width, height, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_R32F);
@@ -2933,6 +2932,23 @@ void R_CreateBuiltinImages( void ) {
 			tr.sunRaysImage = R_CreateImage("*sunRays", NULL, width, height, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, rgbFormat);
 
 		tr.renderDepthImage  = R_CreateImage("*renderdepth",  NULL, width, height, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_DEPTH_COMPONENT24);
+		qglTextureParameteriEXT(tr.renderDepthImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+		qglTextureParameteriEXT(tr.renderDepthImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		{
+			int softW = MAX(64, width / 4);
+			int softH = MAX(64, height / 4);
+			tr.softDepthImage = R_CreateImage("*softdepth", NULL, softW, softH, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_DEPTH_COMPONENT24);
+			qglTextureParameteriEXT(tr.softDepthImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+			qglTextureParameteriEXT(tr.softDepthImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+		}
+		{
+			const int sunShadowSize = 1024;
+			tr.piSunShadowImage = R_CreateImage("*pisunshadow", NULL, sunShadowSize, sunShadowSize, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_DEPTH_COMPONENT24);
+			qglTextureParameteriEXT(tr.piSunShadowImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			qglTextureParameteriEXT(tr.piSunShadowImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			qglTextureParameteriEXT(tr.piSunShadowImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_R_TO_TEXTURE);
+			qglTextureParameteriEXT(tr.piSunShadowImage->texnum, GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
+		}
 		tr.textureDepthImage = R_CreateImage("*texturedepth", NULL, PSHADOW_MAP_SIZE, PSHADOW_MAP_SIZE, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_DEPTH_COMPONENT24);
 
 		{
@@ -2957,6 +2973,14 @@ void R_CreateBuiltinImages( void ) {
 		{
 			tr.quarterImage[x] = R_CreateImage(va("*quarter%d", x), NULL, width / 2, height / 2, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_RGBA8);
 		}
+		{
+			int bloomW = MAX(64, width / 6);
+			int bloomH = MAX(64, height / 6);
+			for (x = 0; x < 2; x++)
+			{
+				tr.bloomImage[x] = R_CreateImage(va("*bloom%d", x), NULL, bloomW, bloomH, IMGTYPE_COLORALPHA, IMGFLAG_NO_COMPRESSION | IMGFLAG_CLAMPTOEDGE, GL_RGBA8);
+			}
+		}
 
 		if (r_ssao->integer)
 		{
@@ -2970,7 +2994,7 @@ void R_CreateBuiltinImages( void ) {
 			//qglTextureParameterfEXT(tr.pshadowMaps[x]->texnum, GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
 		}
 
-		if (r_sunlightMode->integer)
+		if (r_sunlightMode->integer && (r_sunShadows->integer || r_forceSun->integer))
 		{
 			for ( x = 0; x < 4; x++)
 			{
@@ -3098,6 +3122,46 @@ void R_DeleteTextures( void ) {
 	tr.numImages = 0;
 
 	GL_BindNullTextures();
+}
+
+void R_FreeLightmapImages( void ) {
+	int i, dst = 0;
+	qboolean deletedAny = qfalse;
+
+	for ( i = 0; i < tr.numImages; i++ ) {
+		image_t *img = tr.images[i];
+		if ( img && ( !strncmp( img->imgName, "_fatlightmap", 12 )
+			|| !strncmp( img->imgName, "_fatdeluxemap", 13 )
+			|| !strncmp( img->imgName, "*lightmap", 9 )
+			|| !strncmp( img->imgName, "*deluxemap", 10 ) ) )
+		{
+			long hash = generateHashValue( img->imgName );
+			image_t **pp = &hashTable[hash];
+			while ( *pp ) {
+				if ( *pp == img ) {
+					*pp = (*pp)->next;
+					break;
+				}
+				pp = &(*pp)->next;
+			}
+			if ( img->texnum ) {
+				qglDeleteTextures( 1, &img->texnum );
+				img->texnum = 0;
+			}
+			deletedAny = qtrue;
+		} else {
+			tr.images[dst++] = img;
+		}
+	}
+
+	for ( i = dst; i < tr.numImages; i++ ) {
+		tr.images[i] = NULL;
+	}
+	tr.numImages = dst;
+
+	if ( deletedAny ) {
+		GL_BindNullTextures();
+	}
 }
 
 /*

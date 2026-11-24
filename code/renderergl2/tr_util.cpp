@@ -65,6 +65,7 @@ RB_StreamBegin
 */
 void RB_StreamBegin(shader_t *shader)
 {
+    RB_CheckVao(tess.vao);
     RB_BeginSurface(shader, 0, 0);
 }
 
@@ -123,9 +124,9 @@ void RB_StreamEndDrawSurf(void)
 
     numverts = tess.numVertexes - backEnd.dsStreamVert - 2;
     for (i = 0; i < numverts; i++) {
-        tess.indexes[i + tess.numIndexes]     = (i & 1) + i + backEnd.dsStreamVert;
-        tess.indexes[i + tess.numIndexes + 1] = i + backEnd.dsStreamVert - ((i & 1) - 1);
-        tess.indexes[i + tess.numIndexes + 2] = i + backEnd.dsStreamVert + 2;
+        tess.indexes[tess.numIndexes]     = (i & 1) + i + backEnd.dsStreamVert;
+        tess.indexes[tess.numIndexes + 1] = i + backEnd.dsStreamVert - ((i & 1) - 1);
+        tess.indexes[tess.numIndexes + 2] = i + backEnd.dsStreamVert + 2;
         tess.numIndexes += 3;
     }
 }
@@ -187,10 +188,10 @@ RB_Color4f
 */
 void RB_Color4f(vec_t r, vec_t g, vec_t b, vec_t a)
 {
-    cntColor[0] = r * tr.identityLightByte;
-    cntColor[1] = g * tr.identityLightByte;
-    cntColor[2] = b * tr.identityLightByte;
-    cntColor[3] = a * 255.0;
+    cntColor[0] = (byte)Q_clamp_int((int)(r * tr.identityLightByte), 0, 255);
+    cntColor[1] = (byte)Q_clamp_int((int)(g * tr.identityLightByte), 0, 255);
+    cntColor[2] = (byte)Q_clamp_int((int)(b * tr.identityLightByte), 0, 255);
+    cntColor[3] = (byte)Q_clamp_int((int)(a * 255.0f), 0, 255);
 }
 
 /*

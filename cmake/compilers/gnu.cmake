@@ -22,6 +22,19 @@ add_compile_options(-Wno-format-zero-length -Wno-format-nonliteral)
 # that rely on the compiler not optimising them away, so disable it
 add_compile_options(-fno-strict-aliasing)
 
+# Ensure consistent signed char semantics across x86 and ARM/AArch64
+add_compile_options(-fsigned-char)
+
+if(OPTIMIZE_PI5)
+    add_compile_options(-mcpu=cortex-a76)
+elseif(OPTIMIZE_NATIVE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm)")
+        add_compile_options(-mcpu=native)
+    else()
+        add_compile_options(-march=native)
+    endif()
+endif()
+
 # This is necessary to hide all symbols unless explicitly exported
 # via the Q_EXPORT macro
 #add_compile_options(-fvisibility=hidden)

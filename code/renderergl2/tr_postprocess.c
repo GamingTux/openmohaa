@@ -483,3 +483,223 @@ void RB_GaussianBlur(FBO_t *srcFbo, FBO_t *dstFbo, float blur)
 		FBO_Blit(tr.textureScratchFbo[0], srcBox, NULL, dstFbo, dstBox, NULL, color, GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA);
 	}
 }
+
+static void RB_GetMapColorGrade(vec4_t grade)
+{
+	// Neutral identity: (tintR, tintG, tintB, saturation)
+	VectorSet4(grade, 1.0f, 1.0f, 1.0f, 1.0f);
+
+	if (!r_mapAtmosphere || r_mapAtmosphere->integer <= 0 || !tr.world || !tr.world->baseName[0])
+		return;
+
+	const char *m = tr.world->baseName;
+
+	// Mission 1: North Africa (Arzew night stealth vs golden desert)
+	if (!Q_stricmpn(m, "m1l1", 4) || !Q_stricmpn(m, "m1l2b", 5)) {
+		VectorSet4(grade, 0.97f, 0.99f, 1.05f, 1.06f);
+	} else if (!Q_stricmpn(m, "m1", 2)) {
+		VectorSet4(grade, 1.05f, 1.01f, 0.94f, 1.07f);
+	}
+	// Mission 2: Norway / Trondheim U-Boot Pen (cold steel industrial)
+	else if (!Q_stricmpn(m, "m2", 2)) {
+		VectorSet4(grade, 0.95f, 1.00f, 1.05f, 0.96f);
+	}
+	// Mission 3: Omaha Beach (Saving Private Ryan desaturated coastal mist) & Bocage
+	else if (!Q_stricmpn(m, "m3l1", 4)) {
+		VectorSet4(grade, 0.98f, 1.00f, 1.03f, 0.89f);
+	} else if (!Q_stricmpn(m, "m3", 2)) {
+		VectorSet4(grade, 1.02f, 1.02f, 0.96f, 1.04f);
+	}
+	// Mission 4: Behind Enemy Lines (moody French countryside dusk)
+	else if (!Q_stricmpn(m, "m4", 2)) {
+		VectorSet4(grade, 1.03f, 0.99f, 0.96f, 1.02f);
+	}
+	// Mission 5: Day of the Tiger (crisp snowy winter & Sniper's Last Stand)
+	else if (!Q_stricmpn(m, "m5", 2)) {
+		VectorSet4(grade, 0.95f, 0.99f, 1.06f, 0.94f);
+	}
+	// Mission 6: Return to Schmerzen (gritty dramatic late-war contrast)
+	else if (!Q_stricmpn(m, "m6", 2)) {
+		VectorSet4(grade, 1.01f, 0.99f, 0.97f, 0.95f);
+	}
+	// Multiplayer favorites
+	else if (Q_stristr(m, "mohdm1") || Q_stristr(m, "mohdm4")) {
+		VectorSet4(grade, 1.04f, 1.01f, 0.95f, 1.05f);
+	} else if (Q_stristr(m, "mohdm5")) {
+		VectorSet4(grade, 0.95f, 0.99f, 1.06f, 0.94f);
+	} else if (Q_stristr(m, "mohdm3") || Q_stristr(m, "mohdm7")) {
+		VectorSet4(grade, 0.98f, 1.00f, 1.04f, 1.03f);
+	} else {
+		// Subtle default cinematic polish for training / obj / custom maps
+		VectorSet4(grade, 1.01f, 1.01f, 0.99f, 1.03f);
+	}
+}
+
+void RB_ModernPostProcess(FBO_t *srcFbo, ivec4_t srcBox, FBO_t *dstFbo, ivec4_t dstBox)
+{
+	int bloomMode = (r_bloom && tr.bloomFbo[0] && tr.bloomFbo[1]) ? r_bloom->integer : 0;
+	int toneMode  = r_filmicTonemap ? r_filmicTonemap->integer : 0;
+	int sharpMode = r_sharpen ? r_sharpen->integer : 0;
+	vec4_t combineParams;
+	vec4_t srcUvBounds;
+	vec2_t sharpParams;
+	float toneMix;
+	float invSrcW, invSrcH;
+	float scaleX, sharpAmt;
+	shaderProgram_t *combineProg;
+
+	if (!srcFbo)
+		return;
+
+	invSrcW = 1.0f / (float)MAX(1, srcFbo->width);
+	invSrcH = 1.0f / (float)MAX(1, srcFbo->height);
+	if (srcBox)
+	{
+		srcUvBounds[0] = ((float)srcBox[0] + 0.5f) * invSrcW;
+		srcUvBounds[1] = ((float)srcBox[1] + 0.5f) * invSrcH;
+		srcUvBounds[2] = ((float)(srcBox[0] + srcBox[2]) - 0.5f) * invSrcW;
+		srcUvBounds[3] = ((float)(srcBox[1] + srcBox[3]) - 0.5f) * invSrcH;
+	}
+	else
+	{
+		srcUvBounds[0] = 0.5f * invSrcW;
+		srcUvBounds[1] = 0.5f * invSrcH;
+		srcUvBounds[2] = 1.0f - 0.5f * invSrcW;
+		srcUvBounds[3] = 1.0f - 0.5f * invSrcH;
+	}
+
+	if (bloomMode > 0)
+	{
+		ivec4_t bloomBox;
+		vec4_t brightParams;
+		vec2_t srcStep = { 1.5f, 1.5f };
+
+		VectorSet4(bloomBox, 0, 0, tr.bloomFbo[0]->width, tr.bloomFbo[0]->height);
+
+		GLSL_BindProgram(&tr.postFxShader[0]);
+		GLSL_SetUniformVec4(&tr.postFxShader[0], UNIFORM_POSTFXBOUNDS, srcUvBounds);
+
+		if (bloomMode >= 2)
+		{
+			vec2_t blurH1 = { 1.20f, 0.0f };
+			vec2_t blurV1 = { 0.0f, 1.20f };
+			vec2_t blurH2 = { 2.15f, 0.0f };
+			vec2_t blurV2 = { 0.0f, 2.15f };
+
+			VectorSet4(brightParams, 0.48f, 1.92f, 0.45f, 1.0f);
+
+			// 6x6 bilinear downsample + soft-quadratic bright-pass into L2-resident 1/6-res bloom FBO
+			FBO_Blit(srcFbo, srcBox, srcStep, tr.bloomFbo[0], bloomBox, &tr.postFxShader[0], brightParams, 0);
+
+			// Two wide separable 9-tap Gaussian blurs (5 hardware bilinear taps each) at 1/6 res
+			FBO_Blit(tr.bloomFbo[0], bloomBox, blurH1, tr.bloomFbo[1], bloomBox, &tr.postFxShader[1], NULL, 0);
+			FBO_Blit(tr.bloomFbo[1], bloomBox, blurV1, tr.bloomFbo[0], bloomBox, &tr.postFxShader[1], NULL, 0);
+			FBO_Blit(tr.bloomFbo[0], bloomBox, blurH2, tr.bloomFbo[1], bloomBox, &tr.postFxShader[1], NULL, 0);
+			FBO_Blit(tr.bloomFbo[1], bloomBox, blurV2, tr.bloomFbo[0], bloomBox, &tr.postFxShader[1], NULL, 0);
+		}
+		else
+		{
+			vec2_t blurH = { 1.35f, 0.0f };
+			vec2_t blurV = { 0.0f, 1.35f };
+
+			VectorSet4(brightParams, 0.58f, 2.38f, 0.38f, 1.0f);
+
+			// 6x6 bilinear downsample + soft-quadratic bright-pass into L2-resident 1/6-res bloom FBO
+			FBO_Blit(srcFbo, srcBox, srcStep, tr.bloomFbo[0], bloomBox, &tr.postFxShader[0], brightParams, 0);
+
+			// Single wide separable 9-tap Gaussian blur (H + V) at 1/6 res (3 tiny L2 passes total)
+			FBO_Blit(tr.bloomFbo[0], bloomBox, blurH, tr.bloomFbo[1], bloomBox, &tr.postFxShader[1], NULL, 0);
+			FBO_Blit(tr.bloomFbo[1], bloomBox, blurV, tr.bloomFbo[0], bloomBox, &tr.postFxShader[1], NULL, 0);
+		}
+	}
+
+	// Pre-blend strictly-monotonic zero-division cubic filmic S-curve coefficients on CPU:
+	// f(x) = x * (0.760 + x * (0.947 - 0.740 * x)) blended linearly with identity x
+	toneMix = (toneMode >= 2) ? 1.00f : ((toneMode > 0) ? 0.72f : 0.0f);
+	combineParams[0] = (bloomMode >= 2) ? 0.84f : ((bloomMode > 0) ? 0.56f : 0.0f);
+	combineParams[1] = (1.0f - toneMix) + toneMix * 0.760f;
+	combineParams[2] = toneMix * 0.947f;
+	combineParams[3] = toneMix * -0.740f;
+
+	scaleX = (srcBox && dstBox && dstBox[2] > 0) ? Com_Clamp(0.5f, 1.0f, (float)srcBox[2] / (float)dstBox[2]) : 1.0f;
+	if (sharpMode <= 0)
+	{
+		sharpAmt = 0.0f;
+	}
+	else if (sharpMode >= 2)
+	{
+		sharpAmt = Com_Clamp(0.0f, 0.95f, 0.45f + (1.0f - scaleX) * 1.40f);
+	}
+	else
+	{
+		sharpAmt = Com_Clamp(0.0f, 0.68f, 0.24f + (1.0f - scaleX) * 1.25f);
+	}
+	sharpParams[0] = sharpAmt;
+	sharpParams[1] = 0.0f;
+
+	combineProg = (bloomMode > 0 && tr.bloomImage[0]) ? &tr.postFxShader[2] : &tr.postFxShader[3];
+	{
+		vec4_t grade;
+		RB_GetMapColorGrade(grade);
+		GLSL_BindProgram(combineProg);
+		GLSL_SetUniformVec4(combineProg, UNIFORM_POSTFXBOUNDS, srcUvBounds);
+		GLSL_SetUniformVec2(combineProg, UNIFORM_POSTFXSHARPEN, sharpParams);
+		GLSL_SetUniformVec4(combineProg, UNIFORM_POSTFXGRADE, grade);
+	}
+
+	if (bloomMode > 0 && tr.bloomImage[0])
+	{
+		GL_BindToTMU(tr.bloomImage[0], TB_LEVELSMAP);
+		FBO_Blit(srcFbo, srcBox, NULL, dstFbo, dstBox, combineProg, combineParams, 0);
+	}
+	else
+	{
+		FBO_Blit(srcFbo, srcBox, NULL, dstFbo, dstBox, combineProg, combineParams, 0);
+	}
+}
+
+void RB_OnChipFilmicTonemap(ivec4_t dstBox)
+{
+	int toneMode = r_filmicTonemap ? r_filmicTonemap->integer : 0;
+	int atmoMode = r_mapAtmosphere ? r_mapAtmosphere->integer : 0;
+	float toneMix;
+	vec4_t combineParams;
+	vec4_t grade;
+	vec4_t quadVerts[4];
+	vec2_t texCoords[4] = { { 0.0f, 1.0f }, { 1.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, 0.0f } };
+	mat4_t projection;
+	int x0, y0, x1, y1;
+
+	if ((toneMode <= 0 && atmoMode <= 0) || !glRefConfig.framebufferFetch || !tr.postFxShader[4].program)
+		return;
+
+	FBO_Bind(NULL);
+	qglViewport(0, 0, glConfig.vidWidth, glConfig.vidHeight);
+	qglScissor(0, 0, glConfig.vidWidth, glConfig.vidHeight);
+	Mat4Ortho(0, glConfig.vidWidth, glConfig.vidHeight, 0, 0, 1, projection);
+
+	x0 = dstBox ? dstBox[0] : 0;
+	y0 = dstBox ? (glConfig.vidHeight - (dstBox[1] + dstBox[3])) : 0;
+	x1 = dstBox ? (dstBox[0] + dstBox[2]) : glConfig.vidWidth;
+	y1 = dstBox ? (glConfig.vidHeight - dstBox[1]) : glConfig.vidHeight;
+
+	VectorSet4(quadVerts[0], x0, y0, 0.0f, 1.0f);
+	VectorSet4(quadVerts[1], x1, y0, 0.0f, 1.0f);
+	VectorSet4(quadVerts[2], x1, y1, 0.0f, 1.0f);
+	VectorSet4(quadVerts[3], x0, y1, 0.0f, 1.0f);
+
+	toneMix = (toneMode >= 2) ? 1.00f : ((toneMode > 0) ? 0.72f : 0.0f);
+	combineParams[0] = 0.0f;
+	combineParams[1] = (1.0f - toneMix) + toneMix * 0.760f;
+	combineParams[2] = toneMix * 0.947f;
+	combineParams[3] = toneMix * -0.740f;
+	RB_GetMapColorGrade(grade);
+
+	GL_Cull(CT_TWO_SIDED);
+	GL_State(GLS_DEPTHTEST_DISABLE);
+	GLSL_BindProgram(&tr.postFxShader[4]);
+	GLSL_SetUniformMat4(&tr.postFxShader[4], UNIFORM_MODELVIEWPROJECTIONMATRIX, projection);
+	GLSL_SetUniformVec4(&tr.postFxShader[4], UNIFORM_COLOR, combineParams);
+	GLSL_SetUniformVec4(&tr.postFxShader[4], UNIFORM_POSTFXGRADE, grade);
+	RB_InstantQuad2(quadVerts, texCoords);
+}

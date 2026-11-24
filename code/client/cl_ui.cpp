@@ -5232,6 +5232,119 @@ void CL_ShutdownUI(void)
     cls.uiStarted = false;
 }
 
+static void UI_RegisterBuiltinRemasterMenu(qboolean hasExternalRemaster)
+{
+    static const char *s_remasterPart1 =
+        "menu \"remasteroptions\" 640 480 NONE 0\n"
+        "fullscreen 1\n"
+        "bgcolor 0 0 0 1\n"
+        "borderstyle NONE\n"
+        "bgfill 0 0 0 1\n"
+        "virtualres 1\n"
+        "resource Label { name \"bg_right\"\nrect 384 0 256 512\nfgcolor 1 1 1 1\nbgcolor 1 1 1 0\nborderstyle \"NONE\"\nshader \"advanced_b\"\n}\n"
+        "resource Label { name \"bg_left\"\nrect 0 0 512 512\nfgcolor 1 1 1 1\nbgcolor 1 1 1 0\nborderstyle \"NONE\"\nshader \"advanced_a\"\n}\n"
+        "resource Label { name \"backdrop_dim\"\nrect 0 0 640 480\nfgcolor 1 1 1 1\nbgcolor 0.04 0.05 0.04 0.85\nborderstyle \"NONE\"\n}\n"
+        "resource Label { name \"header_bar\"\ntitle \"REMASTER\"\nrect 16 10 608 32\nfont \"facfont-20\"\nfgcolor 0.94 0.82 0.44 1.00\nbgcolor 0.09 0.11 0.08 0.92\nborderstyle \"3D_BORDER\"\n}\n"
+        "resource Label { name \"preset_panel\"\nrect 16 48 608 42\nfgcolor 1 1 1 1\nbgcolor 0.07 0.09 0.07 0.88\nborderstyle \"INDENT_BORDER\"\n}\n"
+        "resource Button { name \"preset_ultra\"\ntitle \"ULTRA (GL2)\"\nrect 24 55 142 28\nfont \"verdana-12\"\nfgcolor 0.98 0.90 0.58 1.00\nbgcolor 0.18 0.22 0.14 0.95\nborderstyle \"3D_BORDER\"\nclicksound \"sound/menu/apply.wav\"\nstuffcommand \"set cl_renderer opengl2; set r_dynamicSunShadows 1; set r_dynamicSunShadowsRate 2; set r_modelPerPixelLighting 1; set r_modernWater 1; set r_worldMicroRelief 1; set r_modernDlights 1; set r_softParticles 1; set r_foliageWind 1; set r_emissiveGlow 1; set r_mapAtmosphere 1; set r_bloom 1; set r_filmicTonemap 1; set r_sharpen 1; set r_dynamicResolution 0; set r_renderScale 1.0; set r_extendedLod 1; set cg_extendedFarplane 1\"\n}\n"
+        "resource Button { name \"preset_fast\"\ntitle \"PERFORMANCE\"\nrect 174 55 146 28\nfont \"verdana-12\"\nfgcolor 0.72 0.98 0.72 1.00\nbgcolor 0.14 0.24 0.16 0.95\nborderstyle \"3D_BORDER\"\nclicksound \"sound/menu/apply.wav\"\nstuffcommand \"set cl_renderer opengl2; set r_dynamicSunShadows 1; set r_dynamicSunShadowsRate 2; set r_modelPerPixelLighting 1; set r_modernWater 1; set r_worldMicroRelief 1; set r_modernDlights 1; set r_softParticles 1; set r_foliageWind 1; set r_emissiveGlow 1; set r_mapAtmosphere 1; set r_bloom 0; set r_filmicTonemap 1; set r_sharpen 0; set r_dynamicResolution 0; set r_renderScale 1.0; set r_extendedLod 1; set cg_extendedFarplane 1\"\n}\n"
+        "resource Button { name \"preset_drs\"\ntitle \"AUTO-DRS 45 FPS\"\nrect 328 55 146 28\nfont \"verdana-12\"\nfgcolor 0.72 0.90 1.00 1.00\nbgcolor 0.14 0.20 0.26 0.95\nborderstyle \"3D_BORDER\"\nclicksound \"sound/menu/apply.wav\"\nstuffcommand \"set cl_renderer opengl2; set r_dynamicSunShadows 1; set r_dynamicSunShadowsRate 2; set r_modelPerPixelLighting 1; set r_modernWater 1; set r_worldMicroRelief 1; set r_modernDlights 1; set r_softParticles 1; set r_foliageWind 1; set r_emissiveGlow 1; set r_mapAtmosphere 1; set r_bloom 1; set r_filmicTonemap 1; set r_sharpen 1; set r_dynamicResolution 1; set r_dynamicResolutionTarget 45; set r_dynamicResolutionMin 0.72; set r_extendedLod 1; set cg_extendedFarplane 1\"\n}\n"
+        "resource Button { name \"preset_gl1\"\ntitle \"CLASSIC GL1\"\nrect 482 55 134 28\nfont \"verdana-12\"\nfgcolor 0.88 0.88 0.88 1.00\nbgcolor 0.22 0.18 0.14 0.95\nborderstyle \"3D_BORDER\"\nclicksound \"sound/menu/apply.wav\"\nstuffcommand \"set cl_renderer opengl1; vid_restart\"\n}\n"
+        "resource Label { name \"gfx_panel\"\nrect 16 96 298 338\nfgcolor 1 1 1 1\nbgcolor 0.06 0.08 0.06 0.88\nborderstyle \"INDENT_BORDER\"\n}\n"
+        "resource Label { name \"gfx_title\"\ntitle \"GRAPHICS & ATMOSPHERE (GL2)\"\nrect 24 102 282 22\nfont \"verdana-14\"\nfgcolor 0.94 0.82 0.44 1.00\nbgcolor 0.12 0.15 0.10 0.85\nborderstyle \"3D_BORDER\"\n}\n"
+        "resource CheckBox { name \"cb_sunshadows\"\ntitle \"Real-Time Sun Shadows\"\nrect 26 128 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_dynamicSunShadows\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_modellight\"\ntitle \"Per-Pixel Model Lighting\"\nrect 26 151 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_modelPerPixelLighting\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_water\"\ntitle \"Modern Water (Waves & Glint)\"\nrect 26 174 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_modernWater\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_microrelief\"\ntitle \"World Micro-Relief (Stone/Wood)\"\nrect 26 197 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_worldMicroRelief\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_wind\"\ntitle \"GPU Wind (Trees & Flags)\"\nrect 26 220 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_foliageWind\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_emissive\"\ntitle \"Glowing Windows & Lanterns\"\nrect 26 243 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_emissiveGlow\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n";
+
+    static const char *s_remasterPart2 =
+        "resource CheckBox { name \"cb_atmo\"\ntitle \"Chapter Cinema Grading\"\nrect 26 266 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_mapAtmosphere\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_dlights\"\ntitle \"Modern Dynamic Lights\"\nrect 26 289 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_modernDlights\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_softparticles\"\ntitle \"Soft Particles (Smoke & Fire)\"\nrect 26 312 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_softParticles\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_bloom\"\ntitle \"Cinema Bloom\"\nrect 26 335 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_bloom\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_filmic\"\ntitle \"Filmic Tonemapping\"\nrect 26 358 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_filmicTonemap\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_sharpen\"\ntitle \"CAS Sharpening (Anti-Halo)\"\nrect 26 381 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_sharpen\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_drs\"\ntitle \"Dynamic Resolution (DRS)\"\nrect 26 404 278 22\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_dynamicResolution\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource Label { name \"game_panel\"\nrect 324 96 300 338\nfgcolor 1 1 1 1\nbgcolor 0.06 0.08 0.06 0.88\nborderstyle \"INDENT_BORDER\"\n}\n"
+        "resource Label { name \"audio_title\"\ntitle \"AUDIO & 3D ACOUSTICS\"\nrect 332 102 284 22\nfont \"verdana-14\"\nfgcolor 0.94 0.82 0.44 1.00\nbgcolor 0.12 0.15 0.10 0.85\nborderstyle \"3D_BORDER\"\n}\n"
+        "resource CheckBox { name \"cb_reverb\"\ntitle \"3D Room Reverb (OpenAL EFX)\"\nrect 334 130 280 26\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"s_reverb\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_hrtf\"\ntitle \"Headphone 3D HRTF Mode\"\nrect 334 159 280 26\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"s_speaker_type\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource Label { name \"view_title\"\ntitle \"DRAW DISTANCE & DETAIL\"\nrect 332 192 284 22\nfont \"verdana-14\"\nfgcolor 0.94 0.82 0.44 1.00\nbgcolor 0.12 0.15 0.10 0.85\nborderstyle \"3D_BORDER\"\n}\n"
+        "resource CheckBox { name \"cb_farplane\"\ntitle \"Extended Draw Distance (+35%)\"\nrect 334 220 280 26\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"cg_extendedFarplane\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_extlod\"\ntitle \"Higher Model & Terrain LOD\"\nrect 334 249 280 26\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"r_extendedLod\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_marks\"\ntitle \"Persistent Battle Marks (45s)\"\nrect 334 278 280 26\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"cg_marks_lifetime\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource Label { name \"gameplay_title\"\ntitle \"GAMEPLAY & COMBAT\"\nrect 332 311 284 22\nfont \"verdana-14\"\nfgcolor 0.94 0.82 0.44 1.00\nbgcolor 0.12 0.15 0.10 0.85\nborderstyle \"3D_BORDER\"\n}\n"
+        "resource CheckBox { name \"cb_gunplay\"\ntitle \"Modern Gunplay & Muzzle Light\"\nrect 334 339 280 26\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"cg_modernGunplay\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource CheckBox { name \"cb_aifair\"\ntitle \"Fair AI (Anti-Laser-Aim)\"\nrect 334 368 280 26\nfont \"verdana-12\"\nfgcolor 0.94 0.94 0.90 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nlinkcvar \"g_aiFairness\"\nchecked_shader \"textures/menu/checkbox_checked\"\nunchecked_shader \"textures/menu/checkbox_unchecked\"\n}\n"
+        "resource Button { name \"btn_apply_gl2\"\ntitle \"Enable OpenGL 2 (Vid Restart)\"\nrect 334 400 280 26\nfont \"verdana-12\"\nfgcolor 0.96 0.86 0.48 1.00\nbgcolor 0.18 0.22 0.14 0.95\nborderstyle \"3D_BORDER\"\nclicksound \"sound/menu/apply.wav\"\nstuffcommand \"set cl_renderer opengl2; vid_restart\"\n}\n"
+        "resource Button { name \"back\"\nrect 16 444 96 26\nfgcolor 1 1 1 1\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\nshader \"textures/mohmenu/back\"\nhovershader \"textures/mohmenu/back_h\"\nclicksound \"sound/menu/back.wav\"\nstuffcommand \"popmenu 0\"\n}\n"
+        "resource Label { name \"status_hint\"\ntitle \"Toggles apply live in-game  |  Active:\"\nrect 124 446 370 22\nfont \"verdana-12\"\nfgcolor 0.82 0.84 0.78 1.00\nbgcolor 0 0 0 0\nborderstyle \"NONE\"\n}\n"
+        "resource Label { name \"renderer_val\"\nrect 496 446 128 22\nfont \"verdana-12\"\nfgcolor 0.94 0.84 0.48 1.00\nbgcolor 0.09 0.11 0.08 0.88\nborderstyle \"INDENT_BORDER\"\nlinkcvar \"cl_renderer\"\n}\n"
+        "end.\n";
+
+    if (hasExternalRemaster) {
+        return;
+    }
+
+    str fullUrc = s_remasterPart1;
+    fullUrc += s_remasterPart2;
+    UILayout *layout = new UILayout();
+    layout->LoadBuffer(fullUrc.c_str(), fullUrc.length(), "builtin_remasteroptions.urc");
+}
+
+static void UI_InjectRemasterButtonOnMenu(const char *menuName, const char *btnSnippet)
+{
+    Menu *menu = menuManager.FindMenu(menuName);
+    if (!menu || menu->GetNamedWidget("remaster_options_btn")) {
+        return;
+    }
+
+    UIWidget *wid = menu->GetContainerWidget();
+    if (!wid || !wid->isSubclassOf(UIWidgetContainer)) {
+        return;
+    }
+
+    UIWidgetContainer *container = (UIWidgetContainer *)wid;
+    UILayout          *layout    = container->m_layout ? container->m_layout : new UILayout();
+    layout->AppendToContainer(container, btnSnippet, strlen(btnSnippet), "builtin_remaster_btn");
+    menu->RealignWidgets();
+    menu->ForceHide();
+}
+
+static void UI_InjectRemasterButtons(void)
+{
+    static const char *s_optionsMainBtn =
+        "resource\nButton\n{\n"
+        "name \"remaster_options_btn\"\n"
+        "title \"REMASTER\"\n"
+        "rect 468 444 162 28\n"
+        "font \"verdana-14\"\n"
+        "fgcolor 0.96 0.86 0.46 1.00\n"
+        "bgcolor 0.14 0.19 0.12 0.92\n"
+        "borderstyle \"3D_BORDER\"\n"
+        "clicksound \"sound/menu/apply.wav\"\n"
+        "stuffcommand \"pushmenu remasteroptions\"\n"
+        "}\nend.\n";
+
+    static const char *s_advancedBtn =
+        "resource\nButton\n{\n"
+        "name \"remaster_options_btn\"\n"
+        "title \"REMASTER\"\n"
+        "rect 374 448 150 24\n"
+        "font \"verdana-12\"\n"
+        "fgcolor 0.96 0.86 0.46 1.00\n"
+        "bgcolor 0.14 0.19 0.12 0.92\n"
+        "borderstyle \"3D_BORDER\"\n"
+        "clicksound \"sound/menu/apply.wav\"\n"
+        "stuffcommand \"pushmenu remasteroptions\"\n"
+        "}\nend.\n";
+
+    UI_InjectRemasterButtonOnMenu("options_main", s_optionsMainBtn);
+    UI_InjectRemasterButtonOnMenu("advancedoptions", s_advancedBtn);
+}
+
 /*
 ====================
 CL_InitUI
@@ -5429,10 +5542,15 @@ void CL_InitializeUI(void)
     }
 
     // Load all urc files
-    filenames = FS_ListFiles("ui/", "urc", qfalse, &nfiles);
+    qboolean hasExternalRemaster = qfalse;
+    filenames                    = FS_ListFiles("ui/", "urc", qfalse, &nfiles);
 
     for (i = 0; i < nfiles; i++) {
         char szFilename[MAX_QPATH];
+
+        if (!Q_stricmp(filenames[i], "remasteroptions.urc")) {
+            hasExternalRemaster = qtrue;
+        }
 
         Com_sprintf(szFilename, sizeof(szFilename), "ui/%s", filenames[i]);
         new UILayout(szFilename);
@@ -5440,7 +5558,11 @@ void CL_InitializeUI(void)
 
     FS_FreeFileList(filenames);
 
+    UI_RegisterBuiltinRemasterMenu(hasExternalRemaster);
+
     uWinMan.CreateMenus();
+
+    UI_InjectRemasterButtons();
 
     // find the crosshair
     // Removed in 2.0

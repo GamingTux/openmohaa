@@ -26,6 +26,22 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 vec4_t r_colorWhite = { 1.0, 1.0, 1.0, 1.0 };
 
 /*
+ * Original MOHAA's 2D draw functions passed backEnd.color2D (0..255) into
+ * RB_Color4f(), multiplying by 255 mod 256 (i.e. 256 - c mod 256), and all
+ * 72 HUD shaders in scripts/hud.shader use `alphaGen oneMinusVertex` to match
+ * that exact convention. Default LIGHTMAP_2D textures use CGEN_GLOBAL_COLOR /
+ * AGEN_GLOBAL_ALPHA which read backEnd.color2D directly.
+ */
+static void RB_Set2DVertexColor(void) {
+    byte vcol[4];
+    vcol[0] = (byte)(((unsigned int)backEnd.color2D[0] * (unsigned int)tr.identityLightByte) & 0xFFu);
+    vcol[1] = (byte)(((unsigned int)backEnd.color2D[1] * (unsigned int)tr.identityLightByte) & 0xFFu);
+    vcol[2] = (byte)(((unsigned int)backEnd.color2D[2] * (unsigned int)tr.identityLightByte) & 0xFFu);
+    vcol[3] = (byte)(((unsigned int)backEnd.color2D[3] * 255u) & 0xFFu);
+    RB_Color4bv(vcol);
+}
+
+/*
 ================
 Draw_SetColor
 ================
@@ -57,7 +73,7 @@ void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, flo
     R_IssuePendingRenderCommands();
 
     if (glRefConfig.framebufferObject)
-        FBO_Bind(tr.renderFbo);
+        FBO_Bind(RB_Get2DFbo());
 
     if (hShader) {
         shader = R_GetShaderByHandle(hShader);
@@ -72,9 +88,10 @@ void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, flo
     }
 
     // draw the pic
+    RB_CheckVao(tess.vao);
     RB_BeginSurface(shader, 0, 0);
 
-    RB_Color4bv(backEnd.color2D);
+    RB_Set2DVertexColor();
 
     RB_Texcoord2f(s1, t1);
     RB_Vertex2f(x, y);
@@ -108,7 +125,7 @@ void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, fl
     R_IssuePendingRenderCommands();
 
     if (glRefConfig.framebufferObject)
-        FBO_Bind(tr.renderFbo);
+        FBO_Bind(RB_Get2DFbo());
 
     if (hShader) {
         shader = R_GetShaderByHandle(hShader);
@@ -130,7 +147,8 @@ void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, fl
     scaledHeight2 = halfHeight * sy;
 
     // draw the pic
-    RB_Color4bv(backEnd.color2D);
+    RB_CheckVao(tess.vao);
+    RB_Set2DVertexColor();
     RB_BeginSurface(shader, 0, 0);
 
     RB_Texcoord2f(s1, t1);
@@ -161,7 +179,7 @@ void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
     R_IssuePendingRenderCommands();
 
     if (glRefConfig.framebufferObject)
-        FBO_Bind(tr.renderFbo);
+        FBO_Bind(RB_Get2DFbo());
 
     if (hShader) {
         shader = R_GetShaderByHandle(hShader);
@@ -179,7 +197,8 @@ void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
     pich = shader->stages[0]->bundle[0].image[0]->uploadHeight;
 
     // draw the pic
-    RB_Color4bv(backEnd.color2D);
+    RB_CheckVao(tess.vao);
+    RB_Set2DVertexColor();
 
     RB_StreamBegin(shader);
 
@@ -210,7 +229,7 @@ void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, i
     R_IssuePendingRenderCommands();
 
     if (glRefConfig.framebufferObject)
-        FBO_Bind(tr.renderFbo);
+        FBO_Bind(RB_Get2DFbo());
 
     if (hShader) {
         shader = R_GetShaderByHandle(hShader);
@@ -228,7 +247,8 @@ void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, i
     pich = shader->stages[0]->bundle[0].image[0]->uploadHeight;
 
     // draw the pic
-    RB_Color4bv(backEnd.color2D);
+    RB_CheckVao(tess.vao);
+    RB_Set2DVertexColor();
 
     RB_StreamBegin(shader);
 
@@ -259,7 +279,7 @@ void Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhand
     R_IssuePendingRenderCommands();
 
     if (glRefConfig.framebufferObject)
-        FBO_Bind(tr.renderFbo);
+        FBO_Bind(RB_Get2DFbo());
 
     if (hShader) {
         shader = R_GetShaderByHandle(hShader);
@@ -269,7 +289,8 @@ void Draw_TrianglePic(const vec2_t vPoints[3], const vec2_t vTexCoords[3], qhand
     }
 
     // draw the pic
-    RB_Color4bv(backEnd.color2D);
+    RB_CheckVao(tess.vao);
+    RB_Set2DVertexColor();
 
     RB_BeginSurface(shader, 0, 0);
 
@@ -387,7 +408,7 @@ void AddBox(float x, float y, float w, float h) {
 
     if (glRefConfig.framebufferObject)
     {
-        FBO_Bind(tr.renderFbo);
+        FBO_Bind(RB_Get2DFbo());
     }
 
     color[0] = backEnd.color2D[0] / 255.0;
@@ -430,7 +451,7 @@ void DrawBox(float x, float y, float w, float h) {
 
     if (glRefConfig.framebufferObject)
     {
-        FBO_Bind(tr.renderFbo);
+        FBO_Bind(RB_Get2DFbo());
     }
 
     color[0] = backEnd.color2D[0] / 255.0;

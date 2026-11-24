@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_init.c -- functions that are not called every frame
 
 #include "tr_local.h"
+#include "../renderercommon/tr_threadpool.h"
 
 #include "tr_dsa.h"
 
@@ -253,6 +254,24 @@ cvar_t *r_drawstaticdecals;
 cvar_t *r_drawterrain;
 cvar_t *r_drawsprites;
 cvar_t *r_drawspherelights;
+cvar_t *r_modelPerPixelLighting;
+cvar_t *r_modernWater;
+cvar_t *r_worldMicroRelief;
+cvar_t *r_bloom;
+cvar_t *r_filmicTonemap;
+cvar_t *r_renderScale;
+cvar_t *r_modernDlights;
+cvar_t *r_softParticles;
+cvar_t *r_dynamicSunShadows;
+cvar_t *r_dynamicSunShadowsRate;
+cvar_t *r_dynamicResolution;
+cvar_t *r_dynamicResolutionTarget;
+cvar_t *r_dynamicResolutionMin;
+cvar_t *r_sharpen;
+cvar_t *r_extendedLod;
+cvar_t *r_foliageWind;
+cvar_t *r_emissiveGlow;
+cvar_t *r_mapAtmosphere;
 
 cvar_t *r_numdebuglines;
 cvar_t *r_stipplelines;
@@ -283,6 +302,8 @@ cvar_t *r_entlight_errbound;
 cvar_t *r_entlight_cubelevel;
 cvar_t *r_entlight_cubefraction;
 cvar_t *r_entlight_maxcalc;
+cvar_t *r_fastentlight;
+cvar_t *r_smoothsmokelight;
 cvar_t *r_light_lines;
 cvar_t *r_light_sun_line;
 cvar_t *r_light_int_scale;
@@ -702,6 +723,9 @@ const void *RB_TakeScreenshotCmd( const void *data ) {
 	// finish any 2D drawing if needed
 	if(tess.numIndexes)
 		RB_EndSurface();
+
+	if (glRefConfig.framebufferObject)
+		FBO_Bind(RB_Get2DFbo());
 
 	if (cmd->jpeg)
 		RB_TakeScreenshotJPEG( cmd->x, cmd->y, cmd->width, cmd->height, cmd->fileName);
@@ -1363,7 +1387,7 @@ void R_Register( void )
 	r_depthbits = ri.Cvar_Get( "r_depthbits", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_ext_multisample = ri.Cvar_Get( "r_ext_multisample", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	ri.Cvar_CheckRange( r_ext_multisample, 0, 4, qtrue );
-	r_overBrightBits = ri.Cvar_Get ("r_overBrightBits", "1", CVAR_ARCHIVE | CVAR_LATCH );
+	r_overBrightBits = ri.Cvar_Get ("r_overBrightBits", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_ignorehwgamma = ri.Cvar_Get( "r_ignorehwgamma", "0", CVAR_ARCHIVE | CVAR_LATCH);
 	r_mode = ri.Cvar_Get( "r_mode", "-2", CVAR_ARCHIVE | CVAR_LATCH );
 	r_fullscreen = ri.Cvar_Get( "r_fullscreen", "1", CVAR_ARCHIVE );
@@ -1381,29 +1405,29 @@ void R_Register( void )
 
 	r_externalGLSL = ri.Cvar_Get( "r_externalGLSL", "0", CVAR_LATCH );
 
-	r_hdr = ri.Cvar_Get( "r_hdr", "1", CVAR_ARCHIVE | CVAR_LATCH );
+	r_hdr = ri.Cvar_Get( "r_hdr", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_floatLightmap = ri.Cvar_Get( "r_floatLightmap", "0", CVAR_ARCHIVE | CVAR_LATCH );
-	r_postProcess = ri.Cvar_Get( "r_postProcess", "1", CVAR_ARCHIVE );
+	r_postProcess = ri.Cvar_Get( "r_postProcess", "0", CVAR_ARCHIVE );
 
-	r_toneMap = ri.Cvar_Get( "r_toneMap", "1", CVAR_ARCHIVE );
+	r_toneMap = ri.Cvar_Get( "r_toneMap", "0", CVAR_ARCHIVE );
 	r_forceToneMap = ri.Cvar_Get( "r_forceToneMap", "0", CVAR_CHEAT );
 	r_forceToneMapMin = ri.Cvar_Get( "r_forceToneMapMin", "-8.0", CVAR_CHEAT );
 	r_forceToneMapAvg = ri.Cvar_Get( "r_forceToneMapAvg", "-2.0", CVAR_CHEAT );
 	r_forceToneMapMax = ri.Cvar_Get( "r_forceToneMapMax", "0.0", CVAR_CHEAT );
 
-	r_autoExposure = ri.Cvar_Get( "r_autoExposure", "1", CVAR_ARCHIVE );
+	r_autoExposure = ri.Cvar_Get( "r_autoExposure", "0", CVAR_ARCHIVE );
 	r_forceAutoExposure = ri.Cvar_Get( "r_forceAutoExposure", "0", CVAR_CHEAT );
 	r_forceAutoExposureMin = ri.Cvar_Get( "r_forceAutoExposureMin", "-2.0", CVAR_CHEAT );
 	r_forceAutoExposureMax = ri.Cvar_Get( "r_forceAutoExposureMax", "2.0", CVAR_CHEAT );
 
 	r_cameraExposure = ri.Cvar_Get( "r_cameraExposure", "1", CVAR_CHEAT );
 
-	r_depthPrepass = ri.Cvar_Get( "r_depthPrepass", "1", CVAR_ARCHIVE );
+	r_depthPrepass = ri.Cvar_Get( "r_depthPrepass", "0", CVAR_ARCHIVE );
 	r_ssao = ri.Cvar_Get( "r_ssao", "0", CVAR_LATCH | CVAR_ARCHIVE );
 
-	r_normalMapping = ri.Cvar_Get( "r_normalMapping", "1", CVAR_ARCHIVE | CVAR_LATCH );
-	r_specularMapping = ri.Cvar_Get( "r_specularMapping", "1", CVAR_ARCHIVE | CVAR_LATCH );
-	r_deluxeMapping = ri.Cvar_Get( "r_deluxeMapping", "1", CVAR_ARCHIVE | CVAR_LATCH );
+	r_normalMapping = ri.Cvar_Get( "r_normalMapping", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	r_specularMapping = ri.Cvar_Get( "r_specularMapping", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	r_deluxeMapping = ri.Cvar_Get( "r_deluxeMapping", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_parallaxMapping = ri.Cvar_Get( "r_parallaxMapping", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_parallaxMapOffset = ri.Cvar_Get( "r_parallaxMapOffset", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_parallaxMapShadows = ri.Cvar_Get( "r_parallaxMapShadows", "0", CVAR_ARCHIVE | CVAR_LATCH );
@@ -1431,7 +1455,7 @@ void R_Register( void )
 	r_drawSunRays = ri.Cvar_Get( "r_drawSunRays", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_sunlightMode = ri.Cvar_Get( "r_sunlightMode", "1", CVAR_ARCHIVE | CVAR_LATCH );
 
-	r_sunShadows = ri.Cvar_Get( "r_sunShadows", "1", CVAR_ARCHIVE | CVAR_LATCH );
+	r_sunShadows = ri.Cvar_Get( "r_sunShadows", "0", CVAR_ARCHIVE | CVAR_LATCH );
 	r_shadowFilter = ri.Cvar_Get( "r_shadowFilter", "1", CVAR_ARCHIVE | CVAR_LATCH );
 	r_shadowBlur = ri.Cvar_Get("r_shadowBlur", "0", CVAR_ARCHIVE | CVAR_LATCH);
 	r_shadowMapSize = ri.Cvar_Get("r_shadowMapSize", "1024", CVAR_ARCHIVE | CVAR_LATCH);
@@ -1446,7 +1470,7 @@ void R_Register( void )
 	r_displayRefresh = ri.Cvar_Get( "r_displayRefresh", "0", CVAR_LATCH );
 	ri.Cvar_CheckRange( r_displayRefresh, 0, 200, qtrue );
 	r_fullbright = ri.Cvar_Get ("r_fullbright", "0", CVAR_LATCH|CVAR_CHEAT );
-	r_mapOverBrightBits = ri.Cvar_Get ("r_mapOverBrightBits", "2", CVAR_LATCH );
+	r_mapOverBrightBits = ri.Cvar_Get ("r_mapOverBrightBits", "1", CVAR_LATCH );
 	r_intensity = ri.Cvar_Get ("r_intensity", "1", CVAR_LATCH );
 	r_singleShader = ri.Cvar_Get ("r_singleShader", "0", CVAR_CHEAT | CVAR_LATCH );
 
@@ -1573,6 +1597,24 @@ void R_Register( void )
     r_drawterrain = ri.Cvar_Get("r_drawterrain", "1", CVAR_CHEAT);
     r_drawsprites = ri.Cvar_Get("r_drawsprites", "1", CVAR_CHEAT);
     r_drawspherelights = ri.Cvar_Get("r_drawspherelights", "1", CVAR_CHEAT);
+    r_modelPerPixelLighting = ri.Cvar_Get("r_modelPerPixelLighting", "1", CVAR_ARCHIVE);
+    r_modernWater = ri.Cvar_Get("r_modernWater", "1", CVAR_ARCHIVE);
+    r_worldMicroRelief = ri.Cvar_Get("r_worldMicroRelief", "1", CVAR_ARCHIVE);
+    r_bloom = ri.Cvar_Get("r_bloom", "1", CVAR_ARCHIVE);
+    r_filmicTonemap = ri.Cvar_Get("r_filmicTonemap", "1", CVAR_ARCHIVE);
+    r_renderScale = ri.Cvar_Get("r_renderScale", "1.0", CVAR_ARCHIVE);
+    r_modernDlights = ri.Cvar_Get("r_modernDlights", "1", CVAR_ARCHIVE);
+    r_softParticles = ri.Cvar_Get("r_softParticles", "1", CVAR_ARCHIVE);
+    r_dynamicSunShadows = ri.Cvar_Get("r_dynamicSunShadows", "1", CVAR_ARCHIVE);
+    r_dynamicSunShadowsRate = ri.Cvar_Get("r_dynamicSunShadowsRate", "2", CVAR_ARCHIVE);
+    r_dynamicResolution = ri.Cvar_Get("r_dynamicResolution", "1", CVAR_ARCHIVE);
+    r_dynamicResolutionTarget = ri.Cvar_Get("r_dynamicResolutionTarget", "45", CVAR_ARCHIVE);
+    r_dynamicResolutionMin = ri.Cvar_Get("r_dynamicResolutionMin", "0.72", CVAR_ARCHIVE);
+    r_sharpen = ri.Cvar_Get("r_sharpen", "1", CVAR_ARCHIVE);
+    r_extendedLod = ri.Cvar_Get("r_extendedLod", "1", CVAR_ARCHIVE);
+    r_foliageWind = ri.Cvar_Get("r_foliageWind", "1", CVAR_ARCHIVE);
+    r_emissiveGlow = ri.Cvar_Get("r_emissiveGlow", "1", CVAR_ARCHIVE);
+    r_mapAtmosphere = ri.Cvar_Get("r_mapAtmosphere", "1", CVAR_ARCHIVE);
 
     r_debuglines_depthmask = ri.Cvar_Get("r_debuglines_depthmask", "0", CVAR_ARCHIVE);
     r_stipplelines = ri.Cvar_Get("r_stipplelines", "1", CVAR_ARCHIVE);
@@ -1603,6 +1645,8 @@ void R_Register( void )
     r_entlight_cubelevel = ri.Cvar_Get("r_entlight_cubelevel", "0", CVAR_ARCHIVE);
     r_entlight_cubefraction = ri.Cvar_Get("r_entlight_cubefraction", "0.5", CVAR_ARCHIVE);
     r_entlight_maxcalc = ri.Cvar_Get("r_entlight_maxcalc", "2", CVAR_ARCHIVE);
+    r_fastentlight = ri.Cvar_Get("r_fastentlight", "0", CVAR_ARCHIVE);
+    r_smoothsmokelight = ri.Cvar_Get("r_smoothsmokelight", "1", CVAR_ARCHIVE);
 
 	// LOD
 
@@ -1729,6 +1773,8 @@ void R_Init( void ) {
 
 	R_NoiseInit();
 
+	R_ThreadPoolInit();
+
 	R_Register();
 
 	max_polys = r_maxpolys->integer;
@@ -1844,6 +1890,7 @@ void RE_Shutdown( qboolean destroyWindow ) {
 	// OPENMOHAA-specific stuff
 	//=========================
     R_ShutdownTerrain();
+    R_ThreadPoolShutdown();
     //=========================
 
 	tr.registered = qfalse;

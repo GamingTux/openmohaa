@@ -157,6 +157,7 @@ cvar_t *g_showdamage;
 cvar_t *g_ai_notifyradius;
 cvar_t *g_ai_noticescale;
 cvar_t *g_ai_soundscale;
+cvar_t *g_aiFairness;
 cvar_t *ai_debug_grenades;
 
 cvar_t *g_warmup;
@@ -480,6 +481,7 @@ void CVAR_Init(void)
     g_ai_notifyradius = gi.Cvar_Get("g_ai_notifyradius", "1024", 0);
     g_ai_noticescale  = gi.Cvar_Get("g_ai_noticescale", "1", 0);
     g_ai_soundscale   = gi.Cvar_Get("g_ai_soundscale", "1", 0);
+    g_aiFairness      = gi.Cvar_Get("g_aiFairness", "1", CVAR_ARCHIVE);
     ai_debug_grenades = gi.Cvar_Get("ai_debug_grenades", "0", CVAR_CHEAT);
 
     g_gametype       = gi.Cvar_Get("g_gametype", "0", CVAR_USERINFO | CVAR_SERVERINFO | CVAR_LATCH);

@@ -412,7 +412,7 @@ static qboolean RB_SurfaceVaoCached(int numVerts, srfVert_t *verts, int numIndex
 	if (!r_vaoCache->integer)
 		return qfalse;
 
-	if (!(!ShaderRequiresCPUDeforms(tess.shader) && !tess.shader->isSky && !tess.shader->isPortal))
+	if (!(!ShaderRequiresCPUDeforms(tess.shader) && !tess.shader->needsCpuColors && !tess.shader->isSky && !tess.shader->isPortal))
 		return qfalse;
 
 	if (!numIndexes || !numVerts)
@@ -1315,6 +1315,7 @@ void RB_SurfaceMarkFragment(srfMarkFragment_t* p) {
 	int i;
 	int numv;
 
+	RB_CheckVao(tess.vao);
 	RB_CHECKOVERFLOW( p->numVerts, 3*(p->numVerts - 2) );
 
 	if (p->iIndex <= 0 || R_TerrainHeightForPoly(&tr.world->terraPatches[p->iIndex - 1], p->verts, p->numVerts))
@@ -1351,106 +1352,70 @@ void RB_SurfaceMarkFragment(srfMarkFragment_t* p) {
 
 void RB_DrawTerrainTris(srfTerrain_t* p) {
 	int i;
-	terraInt numv;
 	int dlightBits;
+	const unsigned int attribs = tess.shader->vertexAttribs;
+	const qboolean needTex = (attribs & ATTR_TEXCOORD) != 0;
+	const qboolean needLight = (attribs & ATTR_LIGHTCOORD) != 0;
+	const qboolean needNormal = (attribs & ATTR_NORMAL) != 0;
+	const qboolean needColor = (attribs & ATTR_COLOR) != 0;
+	int numVerts;
+	int numIndexes;
 
+	RB_CheckVao(tess.vao);
 	RB_CHECKOVERFLOW(p->nVerts, p->nTris * 3);
 
 	dlightBits = p->dlightBits[0];
 	tess.dlightBits |= dlightBits;
-	if (p->dlightMap[0])
-	{
-		float lmScale = (1.0 / LIGHTMAP_SIZE) / p->lmapStep;
+	numVerts = tess.numVertexes;
+	for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
+		terrainVert_t *v = &g_pVert[i];
 
-		for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
-			assert(tess.numVertexes < SHADER_MAX_VERTEXES);
-
-            if (tess.shader->vertexAttribs & ATTR_POSITION)
-            {
-			    VectorCopy(g_pVert[i].xyz, tess.xyz[tess.numVertexes]);
-            }
-            if (tess.shader->vertexAttribs & ATTR_TEXCOORD)
-            {
-                tess.texCoords[tess.numVertexes][0] = g_pVert[i].texCoords[0][0];
-                tess.texCoords[tess.numVertexes][1] = g_pVert[i].texCoords[0][1];
-            }
-            if (tess.shader->vertexAttribs & ATTR_LIGHTCOORD)
-            {
-                tess.lightCoords[tess.numVertexes][0] = g_pVert[i].xyz[0] * lmScale + p->lmapX;
-                tess.lightCoords[tess.numVertexes][1] = g_pVert[i].xyz[1] * lmScale + p->lmapY;
-            }
-            if (tess.shader->vertexAttribs & ATTR_NORMAL)
-            {
-                tess.normal[tess.numVertexes][0] = 0;
-                tess.normal[tess.numVertexes][1] = 0;
-                tess.normal[tess.numVertexes][2] = 32767;
-            }
-            if (tess.shader->vertexAttribs & ATTR_COLOR)
-            {
-                tess.color[tess.numVertexes][0] = 0xffff;
-                tess.color[tess.numVertexes][1] = 0xffff;
-                tess.color[tess.numVertexes][2] = 0xffff;
-                tess.color[tess.numVertexes][3] = 0xffff;
-            }
-
-			g_pVert[i].iVertArray = tess.numVertexes;
-			tess.numVertexes++;
+		VectorCopy(v->xyz, tess.xyz[numVerts]);
+		if (needTex)
+		{
+			tess.texCoords[numVerts][0] = v->texCoords[0][0];
+			tess.texCoords[numVerts][1] = v->texCoords[0][1];
 		}
-	}
-	else
-	{
-		for (i = p->iVertHead; i; i = g_pVert[i].iNext) {
-			assert(tess.numVertexes < SHADER_MAX_VERTEXES);
-
-            if (tess.shader->vertexAttribs & ATTR_POSITION)
-            {
-			    VectorCopy(g_pVert[i].xyz, tess.xyz[tess.numVertexes]);
-            }
-            if (tess.shader->vertexAttribs & ATTR_TEXCOORD)
-            {
-                tess.texCoords[tess.numVertexes][0] = g_pVert[i].texCoords[0][0];
-                tess.texCoords[tess.numVertexes][1] = g_pVert[i].texCoords[0][1];
-            }
-            if (tess.shader->vertexAttribs & ATTR_LIGHTCOORD)
-            {
-                tess.lightCoords[tess.numVertexes][0] = g_pVert[i].texCoords[1][0];
-                tess.lightCoords[tess.numVertexes][1] = g_pVert[i].texCoords[1][1];
-            }
-			//tess.vertexDlightBits[tess.numVertexes] = dlightBits;
-            if (tess.shader->vertexAttribs & ATTR_NORMAL)
-            {
-                tess.normal[tess.numVertexes][0] = 0;
-                tess.normal[tess.numVertexes][1] = 0;
-                tess.normal[tess.numVertexes][2] = 32767;
-            }
-            if (tess.shader->vertexAttribs & ATTR_COLOR)
-            {
-                tess.color[tess.numVertexes][0] = 0xffff;
-                tess.color[tess.numVertexes][1] = 0xffff;
-                tess.color[tess.numVertexes][2] = 0xffff;
-                tess.color[tess.numVertexes][3] = 0xffff;
-            }
-
-			g_pVert[i].iVertArray = tess.numVertexes;
-			tess.numVertexes++;
+		if (needLight)
+		{
+			tess.lightCoords[numVerts][0] = v->texCoords[1][0];
+			tess.lightCoords[numVerts][1] = v->texCoords[1][1];
 		}
-	}
+		if (needNormal)
+		{
+			tess.normal[numVerts][0] = 0;
+			tess.normal[numVerts][1] = 0;
+			tess.normal[numVerts][2] = 32767;
+			tess.normal[numVerts][3] = 0;
+		}
+		if (needColor)
+		{
+			tess.color[numVerts][0] = 0xffff;
+			tess.color[numVerts][1] = 0xffff;
+			tess.color[numVerts][2] = 0xffff;
+			tess.color[numVerts][3] = 0xffff;
+		}
 
+		v->iVertArray = numVerts;
+		numVerts++;
+	}
+	tess.numVertexes = numVerts;
+
+	numIndexes = tess.numIndexes;
 	for (i = p->iTriHead; i; i = g_pTris[i].iNext)
 	{
-		assert(tess.numVertexes < SHADER_MAX_INDEXES);
-
 		//
 		// Make sure these can be drawn
 		//
 		if (g_pTris[i].byConstChecks & 4)
 		{
-			tess.indexes[tess.numIndexes] = g_pVert[g_pTris[i].iPt[0]].iVertArray;
-			tess.indexes[tess.numIndexes + 1] = g_pVert[g_pTris[i].iPt[1]].iVertArray;
-			tess.indexes[tess.numIndexes + 2] = g_pVert[g_pTris[i].iPt[2]].iVertArray;
-			tess.numIndexes += 3;
+			tess.indexes[numIndexes]     = g_pVert[g_pTris[i].iPt[0]].iVertArray;
+			tess.indexes[numIndexes + 1] = g_pVert[g_pTris[i].iPt[1]].iVertArray;
+			tess.indexes[numIndexes + 2] = g_pVert[g_pTris[i].iPt[2]].iVertArray;
+			numIndexes += 3;
 		}
 	}
+	tess.numIndexes = numIndexes;
 }
 
 //=========================

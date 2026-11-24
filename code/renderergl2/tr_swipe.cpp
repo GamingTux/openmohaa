@@ -87,14 +87,22 @@ RE_SwipePoint
 */
 void RE_SwipePoint(vec3_t point1, vec3_t point2, float time)
 {
-    rendswipe_t *swipe = &swipes[numswipes - 1];
+    rendswipe_t *swipe;
+
+    if (numswipes <= 0) {
+        return;
+    }
+
+    swipe = &swipes[numswipes - 1];
 
     if (swipe->numswipes >= MAX_SWIPE_POINTS) {
         return;
     }
 
-    VectorCopy(point1, swipe->swipes[swipe->numswipes - 1].points[0]);
-    VectorCopy(point2, swipe->swipes[swipe->numswipes - 1].points[1]);
+    VectorCopy(point1, swipe->swipes[swipe->numswipes].points[0]);
+    VectorCopy(point2, swipe->swipes[swipe->numswipes].points[1]);
+    swipe->swipes[swipe->numswipes].time = time;
+    swipe->numswipes++;
 }
 
 /*
@@ -156,6 +164,7 @@ void RB_DrawSwipeSurface(surfaceType_t *pswipe)
 
     oolife = 1.0 / swipe->life;
 
+    RB_CheckVao(tess.vao);
     RB_CHECKOVERFLOW(swipe->numswipes * 2, swipe->numswipes * 6);
 
     RB_StreamBeginDrawSurf();

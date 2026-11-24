@@ -93,6 +93,20 @@ void R_PerformanceCounters( void ) {
 		ri.Printf( PRINT_ALL, "GLSL binds: %i  draws: gen %i light %i fog %i dlight %i\n",
 			backEnd.pc.c_glslShaderBinds, backEnd.pc.c_genericDraws, backEnd.pc.c_lightallDraws, backEnd.pc.c_fogDraws, backEnd.pc.c_dlightDraws);
 	}
+	else if (r_speeds->integer == 8 )
+	{
+		ri.Printf( PRINT_ALL, "ms: front=%.2f surfs=%.2f vbo=%.2f draw=%.2f swap=%.2f total_be=%.2f (stat=%i dyn=%i binds=%i drs=%.2f)\n",
+			backEnd.pc.usec_frontend * 0.001f,
+			backEnd.pc.usec_surfs * 0.001f,
+			backEnd.pc.usec_vbo * 0.001f,
+			backEnd.pc.usec_draw * 0.001f,
+			backEnd.pc.usec_swap * 0.001f,
+			(backEnd.pc.usec_surfs + backEnd.pc.usec_swap) * 0.001f,
+			backEnd.pc.c_staticVaoDraws,
+			backEnd.pc.c_dynamicVaoDraws,
+			backEnd.pc.c_glslShaderBinds,
+			tr.drsScale );
+	}
 
 	Com_Memset( &tr.pc, 0, sizeof( tr.pc ) );
 	Com_Memset( &backEnd.pc, 0, sizeof( backEnd.pc ) );

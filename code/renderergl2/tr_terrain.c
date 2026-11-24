@@ -602,7 +602,7 @@ static void R_ForceMerge(terraInt iTri)
 
         R_ReleaseTri(pTri->patch, pTri->iRightChild);
 
-        pTri->iLeftChild = 0;
+        pTri->iRightChild = 0;
         g_pTris[pTri->iParent].nSplit--;
     }
 
@@ -772,9 +772,14 @@ static void R_PreTessellateTerrain()
         const float t10 = patch->texCoord[1][0][1] - tMin;
         const float t11 = patch->texCoord[1][1][1] - tMin;
 
-        const float lmapSize = (float)(patch->drawinfo.lmapSize - 1) / TERRAIN_LIGHTMAP_SIZE;
-        const float ls       = patch->s + lmapSize;
-        const float lt       = patch->t + lmapSize;
+        float lmapSizeU = (float)(patch->drawinfo.lmapSize - 1) / TERRAIN_LIGHTMAP_SIZE;
+        float lmapSizeV = lmapSizeU;
+        if (r_mergeLightmaps->integer && tr.fatLightmapCols > 0 && patch->shader && patch->shader->lightmapIndex >= 0) {
+            lmapSizeU /= (float)tr.fatLightmapCols;
+            lmapSizeV /= (float)tr.fatLightmapRows;
+        }
+        const float ls = patch->s + lmapSizeU;
+        const float lt = patch->t + lmapSizeV;
 
         terraInt iTri0 = R_AllocateTri(patch, qfalse);
         terraInt iTri1 = R_AllocateTri(patch, qfalse);
@@ -1208,7 +1213,13 @@ void R_TerrainPrepareFrame()
         fFov = 1.0;
     }
 
-    fCheck = 1.0 / (tan(fFov / 114.0) * ter_error->value / 320.0);
+    {
+        float effTerError = ter_error->value;
+        if (r_extendedLod && r_extendedLod->integer && effTerError > 1.5f) {
+            effTerError = 1.5f;
+        }
+        fCheck = 1.0 / (tan(fFov / 114.0) * effTerError / 320.0);
+    }
     if (g_terVisCount) {
         float fFarPlane = tr.viewParms.farplane_distance;
         if (fFarPlane == 0.0) {
@@ -1330,7 +1341,7 @@ void R_AddTerrainSurfaces()
             if (ter_lock->integer == 2 || patch->visCountDraw == g_terVisCount) {
                 assert(patch->shader);
 
-                dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
+                dlight = R_CheckDlightTerrain(patch, (int)((1ULL << tr.refdef.num_dlights) - 1));
                 R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, 0, dlight, 0, 0);
             }
 
@@ -1354,7 +1365,7 @@ void R_AddTerrainSurfaces()
         for (patch = tr.world->activeTerraPatches; patch; patch = patch->pNextActive) {
             assert(patch->shader);
 
-            dlight = R_CheckDlightTerrain(patch, (1 << (tr.refdef.num_dlights)) - 1);
+            dlight = R_CheckDlightTerrain(patch, (int)((1ULL << tr.refdef.num_dlights) - 1));
             R_AddDrawSurf((surfaceType_t *)&patch->drawinfo, patch->shader, 0, dlight, 0, 0);
         }
     }
@@ -1627,7 +1638,7 @@ void R_InitTerrain()
     ter_lock = ri.Cvar_Get("ter_lock", "0", CVAR_CHEAT);
 
     ter_error = ri.Cvar_Get("ter_error", "4", CVAR_ARCHIVE);
-    ri.Cvar_CheckRange(ter_error, 0, 16, qtrue);
+    ri.Cvar_CheckRange(ter_error, 0.1, 16, qfalse);
 
     ter_cautiousframes = ri.Cvar_Get("ter_cautiousframes", "1", CVAR_ARCHIVE);
 

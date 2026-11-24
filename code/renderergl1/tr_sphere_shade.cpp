@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_sphere_shade.cpp -- sphere shade
 
 #include "tr_local.h"
+#include "../renderercommon/tr_threadpool.h"
 
 typedef struct gatheredLight_s {
     spherel_t       *pLight;
@@ -72,10 +73,12 @@ static vec3_t offsets[26] = {
 
 int compare_light_intensities(const void *p1, const void *p2)
 {
-    return *(int *)&((const reallightinfo_t *)p2)->fIntensity - *(int *)&((const reallightinfo_t *)p1)->fIntensity;
+    float ia = ((const reallightinfo_t *)p1)->fIntensity;
+    float ib = ((const reallightinfo_t *)p2)->fIntensity;
+    return (ib > ia) - (ib < ia);
 }
 
-static void RB_OptimizeLights()
+static void RB_OptimizeLightsFor(sphereor_t *pSphere)
 {
     static int iCubeBuildInfo[24][9] = {
         {0, 1, 2, 1,  1,  0, 6,  10, 18},
@@ -113,45 +116,43 @@ static void RB_OptimizeLights()
 
     nCubeMapLights = 0;
 
-    // FIXME: re-enable when cubemap light is fixed
-#if 0
-    if (backEnd.currentSphere->numRealLights > 2) {
+    if (pSphere->numRealLights > 2) {
         qsort(
-            backEnd.currentSphere->light,
-            backEnd.currentSphere->numRealLights,
+            pSphere->light,
+            pSphere->numRealLights,
             sizeof(reallightinfo_t),
             compare_light_intensities
         );
 
-        for (i = 0; i < backEnd.currentSphere->numRealLights && i < r_entlight_maxcalc->integer; i++) {
-            pLight = &backEnd.currentSphere->light[i];
+        fMaxIntensity = pSphere->light[0].fIntensity;
+        for (i = 0; i < pSphere->numRealLights && i < r_entlight_maxcalc->integer; i++) {
+            pLight = &pSphere->light[i];
 
             if (pLight->fIntensity < r_entlight_cubelevel->value
-                || pLight->fIntensity * r_entlight_cubefraction->value > pLight->fIntensity) {
+                || pLight->fIntensity < fMaxIntensity * r_entlight_cubefraction->value) {
                 break;
             }
         }
 
-        nCubeMapLights = backEnd.currentSphere->numRealLights - i;
+        nCubeMapLights = pSphere->numRealLights - i;
         if (nCubeMapLights <= 1) {
             nCubeMapLights = 0;
         }
     }
-#endif
 
-    backEnd.currentSphere->bUsesCubeMap = nCubeMapLights > 0;
-    if (backEnd.currentSphere->bUsesCubeMap) {
+    pSphere->bUsesCubeMap = nCubeMapLights > 0;
+    if (pSphere->bUsesCubeMap) {
         for (i = 0; i < 26; i++) {
             float  fDot;
             vec3_t v;
 
-            colorout[0] = backEnd.currentSphere->ambient.level[0];
-            colorout[1] = backEnd.currentSphere->ambient.level[1];
-            colorout[2] = backEnd.currentSphere->ambient.level[2];
+            colorout[0] = pSphere->ambient.level[0];
+            colorout[1] = pSphere->ambient.level[1];
+            colorout[2] = pSphere->ambient.level[2];
 
-            for (j = backEnd.currentSphere->numRealLights - nCubeMapLights; j < backEnd.currentSphere->numRealLights;
+            for (j = pSphere->numRealLights - nCubeMapLights; j < pSphere->numRealLights;
                  j++) {
-                pLight = &backEnd.currentSphere->light[j];
+                pLight = &pSphere->light[j];
 
                 switch (pLight->eType) {
                 case LIGHT_SPOT:
@@ -161,7 +162,7 @@ static void RB_OptimizeLights()
                             float fProjSquared;
                             float fDistSquared;
 
-                            VectorSubtract(pLight->vOrigin, backEnd.currentSphere->origin, v);
+                            VectorSubtract(pLight->vOrigin, pSphere->origin, v);
                             fProjSquared  = Square(DotProduct(v, pLight->vDirection));
                             fDistSquared  = VectorLengthSquared(v);
                             fMaxIntensity = (pLight->fSpotConst - fDistSquared / fProjSquared) * pLight->fSpotScale;
@@ -181,7 +182,7 @@ static void RB_OptimizeLights()
                     if (fDot > 0) {
                         float fDistSquared;
 
-                        VectorSubtract(pLight->vOrigin, backEnd.currentSphere->origin, v);
+                        VectorSubtract(pLight->vOrigin, pSphere->origin, v);
                         fDistSquared = VectorLengthSquared(v);
 
                         fDot /= fDistSquared;
@@ -195,7 +196,7 @@ static void RB_OptimizeLights()
                     }
                     break;
                 case LIGHT_POINT:
-                    VectorSubtract(pLight->vOrigin, backEnd.currentSphere->origin, v);
+                    VectorSubtract(pLight->vOrigin, pSphere->origin, v);
                     fDot = DotProduct(v, offsets[i]);
                     if (fDot > 0) {
                         fDot /= VectorLengthSquared(v);
@@ -213,7 +214,7 @@ static void RB_OptimizeLights()
             cubecolor[i][2] = Q_min(colorout[2], 255);
         }
 
-        cube = backEnd.currentSphere->cubemap;
+        cube = pSphere->cubemap;
 
         for (i = 0; i < 24; i++) {
             for (j = 0; j < 3; j++) {
@@ -231,10 +232,10 @@ static void RB_OptimizeLights()
             }
         }
 
-        backEnd.currentSphere->numRealLights -= nCubeMapLights;
+        pSphere->numRealLights -= nCubeMapLights;
     }
 
-    for (i = 0; i < backEnd.currentSphere->numRealLights; i++) {
+    for (i = 0; i < pSphere->numRealLights; i++) {
         float  fDistParallel;
         float  fDistPerp;
         float  fDistSquared;
@@ -242,23 +243,24 @@ static void RB_OptimizeLights()
         float  fSlope;
         vec3_t v;
 
-        pLight = &backEnd.currentSphere->light[i];
+        pLight = &pSphere->light[i];
 
         switch (pLight->eType) {
         case LIGHT_SPOT:
-            VectorSubtract(pLight->vOrigin, backEnd.currentSphere->origin, v);
+            VectorSubtract(pLight->vOrigin, pSphere->origin, v);
             fDistSquared   = VectorLengthSquared(v);
             fSlope         = DotProduct(v, pLight->vDirection);
-            fDistPerp      = sqrt(fDistSquared - Square(fSlope));
-            fRadiusSquared = Square(backEnd.currentSphere->radius);
+            fDistPerp      = sqrt(Q_max(0.0f, fDistSquared - Square(fSlope)));
+            fRadiusSquared = Square(pSphere->radius);
             fDistParallel  = fDistPerp + fSlope * (pLight->fSpotSlope * 0.9f);
             if (Square(fDistParallel) >= fRadiusSquared + Square(pLight->fSpotSlope * 0.9f) * fRadiusSquared) {
                 pLight->eType = LIGHT_SPOT_FAST;
             }
             break;
         case LIGHT_POINT:
-            if ((pLight->fDist - backEnd.currentSphere->radius) * r_entlight_errbound->value * pLight->fDist
-                > backEnd.currentSphere->radius * pLight->fIntensity) {
+            if (pLight->fDist > 1e-4f
+                && (pLight->fDist - pSphere->radius) * r_entlight_errbound->value * pLight->fDist
+                    > pSphere->radius * pLight->fIntensity) {
                 pLight->eType = LIGHT_DIRECTIONAL;
 
                 VectorScale(pLight->color, 1.0f / pLight->fDist, pLight->color);
@@ -271,31 +273,27 @@ static void RB_OptimizeLights()
     }
 }
 
-static void RB_Light_CubeMap(unsigned char *colors)
+static void RB_Light_CubeMap_Range(int start, int end, void *ctx)
 {
     int              i, j;
-    float           *normal;
-    float           *xyz;
-    unsigned char   *color;
+    unsigned char   *colors = (unsigned char *)ctx;
+    float           *normal = (float *)tess.normal + start * 4;
+    float           *xyz    = (float *)tess.xyz + start * 4;
+    unsigned char   *color  = colors + start * 4;
     vec3_t           colorout;
     reallightinfo_t *pLight;
 
-    color  = colors;
-    normal = (float *)tess.normal;
-    xyz    = (float *)tess.xyz;
-
-    for (i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4, color += 4) {
+    for (i = start; i < end; i++, xyz += 4, normal += 4, color += 4) {
         unsigned int components[3];
+        float        ax = Q_fabs(normal[0]);
+        float        ay = Q_fabs(normal[1]);
+        float        az = Q_fabs(normal[2]);
 
-        if (normal[1] == -1) {
+        if (ay >= ax && ay >= az) {
             components[0] = 1;
             components[1] = 0;
             components[2] = 2;
-        } else if (normal[1] == 1 && !normal[0] && !normal[2]) {
-            components[0] = 1;
-            components[1] = 0;
-            components[2] = 2;
-        } else if (Q_fabs(normal[0]) >= Q_fabs(normal[2])) {
+        } else if (ax >= az) {
             components[0] = 0;
             components[1] = 1;
             components[2] = 2;
@@ -309,14 +307,16 @@ static void RB_Light_CubeMap(unsigned char *colors)
             (normal[2] < 0 ? 1 : 0) | (normal[1] < 0 ? 2 : 0) | (normal[0] < 0 ? 4 : 0) | (components[0] << 3);
         float newnorms[3];
         float mapping[3];
+        float invNorm0;
         float(*cube)[3][4];
 
         newnorms[0] = normal[components[0]];
         newnorms[1] = normal[components[1]];
         newnorms[2] = normal[components[2]];
 
-        mapping[0] = 1.f / newnorms[0] * newnorms[1];
-        mapping[1] = 1.f / newnorms[0] * newnorms[2];
+        invNorm0   = (Q_fabs(newnorms[0]) > 1e-5f) ? (1.f / newnorms[0]) : 0.f;
+        mapping[0] = invNorm0 * newnorms[1];
+        mapping[1] = invNorm0 * newnorms[2];
         mapping[2] = mapping[0] * mapping[1];
 
         cube = &backEnd.currentSphere->cubemap[cubeIndex];
@@ -387,38 +387,25 @@ static void RB_Light_CubeMap(unsigned char *colors)
     }
 }
 
-void RB_Light_Real(unsigned char *colors)
+static void RB_Light_CubeMap(unsigned char *colors)
+{
+    R_ParallelFor(tess.numVertexes, 128, RB_Light_CubeMap_Range, colors);
+}
+
+static void RB_Light_Real_Range(int start, int end, void *ctx)
 {
     int              i, j;
-    float           *normal;
-    float           *xyz;
-    unsigned char   *color;
+    unsigned char   *colors = (unsigned char *)ctx;
+    float           *normal = (float *)tess.normal + start * 4;
+    float           *xyz    = (float *)tess.xyz + start * 4;
+    unsigned char   *color  = colors + start * 4;
     vec3_t           v;
     vec3_t           colorout;
     float            fDot;
     reallightinfo_t *pLight;
 
-    color = colors;
-    if (backEnd.currentSphere->bUsesCubeMap) {
-        RB_Light_CubeMap(colors);
-        return;
-    }
-
-    if (!backEnd.currentSphere->numRealLights) {
-        for (i = 0; i < tess.numVertexes; i++, color += 4) {
-            color[0] = backEnd.currentSphere->ambient.level[0];
-            color[1] = backEnd.currentSphere->ambient.level[1];
-            color[2] = backEnd.currentSphere->ambient.level[2];
-            color[3] = backEnd.currentSphere->ambient.level[3];
-        }
-        return;
-    }
-
     if (backEnd.currentSphere->numRealLights != 1) {
-        normal = (float *)tess.normal;
-        xyz    = (float *)tess.xyz;
-
-        for (i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4, color += 4) {
+        for (i = start; i < end; i++, xyz += 4, normal += 4, color += 4) {
             colorout[0] = colorout[1] = colorout[2] = 0;
 
             for (j = 0; j < backEnd.currentSphere->numRealLights; j++) {
@@ -478,14 +465,11 @@ void RB_Light_Real(unsigned char *colors)
             color[3] = 0xff;
         }
     } else {
-        normal = (float *)tess.normal;
-        xyz    = (float *)tess.xyz;
-
         pLight = &backEnd.currentSphere->light[0];
 
         switch (backEnd.currentSphere->light[0].eType) {
         case LIGHT_DIRECTIONAL:
-            for (i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4, color += 4) {
+            for (i = start; i < end; i++, xyz += 4, normal += 4, color += 4) {
                 fDot = DotProduct(pLight->vDirection, normal);
                 if (fDot > 0) {
                     VectorScale(pLight->color, fDot, colorout);
@@ -503,7 +487,7 @@ void RB_Light_Real(unsigned char *colors)
             }
             break;
         case LIGHT_SPOT:
-            for (i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4, color += 4) {
+            for (i = start; i < end; i++, xyz += 4, normal += 4, color += 4) {
                 float fDistSquared;
                 float fProjSquared;
                 float fMaxIntensity;
@@ -537,7 +521,7 @@ void RB_Light_Real(unsigned char *colors)
             }
             break;
         case LIGHT_SPOT_FAST:
-            for (i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4, color += 4) {
+            for (i = start; i < end; i++, xyz += 4, normal += 4, color += 4) {
                 color[0] = backEnd.currentSphere->ambient.level[0];
                 color[1] = backEnd.currentSphere->ambient.level[1];
                 color[2] = backEnd.currentSphere->ambient.level[2];
@@ -559,7 +543,7 @@ void RB_Light_Real(unsigned char *colors)
             }
             break;
         case LIGHT_POINT:
-            for (i = 0; i < tess.numVertexes; i++, xyz += 4, normal += 4, color += 4) {
+            for (i = start; i < end; i++, xyz += 4, normal += 4, color += 4) {
                 VectorSubtract(pLight->vOrigin, xyz, v);
                 fDot = DotProduct(v, normal);
                 if (fDot > 0) {
@@ -584,7 +568,28 @@ void RB_Light_Real(unsigned char *colors)
     }
 }
 
-static void RB_Sphere_Light_Sun()
+void RB_Light_Real(unsigned char *colors)
+{
+    if (backEnd.currentSphere->bUsesCubeMap) {
+        RB_Light_CubeMap(colors);
+        return;
+    }
+
+    if (!backEnd.currentSphere->numRealLights) {
+        unsigned char *color = colors;
+        for (int i = 0; i < tess.numVertexes; i++, color += 4) {
+            color[0] = backEnd.currentSphere->ambient.level[0];
+            color[1] = backEnd.currentSphere->ambient.level[1];
+            color[2] = backEnd.currentSphere->ambient.level[2];
+            color[3] = backEnd.currentSphere->ambient.level[3];
+        }
+        return;
+    }
+
+    R_ParallelFor(tess.numVertexes, 128, RB_Light_Real_Range, colors);
+}
+
+static void RB_Sphere_Light_Sun(trRefEntity_t *ent, sphereor_t *pSphere, qboolean allowDebugLines)
 {
     int      curleaf;
     qboolean hitSun;
@@ -596,12 +601,12 @@ static void RB_Sphere_Light_Sun()
         return;
     }
 
-    if (tr.world->vis && backEnd.currentSphere->leaves[0] && tr.sSunLight.leaf == (struct mnode_s *)-1) {
+    if (tr.world->vis && pSphere->leaves[0] && tr.sSunLight.leaf == (struct mnode_s *)-1) {
         vec3_t transpos;
         vec3_t temppos;
 
         for (curleaf = 0; curleaf < 8; curleaf++) {
-            leaf = backEnd.currentSphere->leaves[curleaf];
+            leaf = pSphere->leaves[curleaf];
             if (!leaf) {
                 break;
             }
@@ -612,11 +617,11 @@ static void RB_Sphere_Light_Sun()
         }
 
         if (!leaf || (leaf->lights && leaf->lights[0] != &tr.sSunLight)) {
-            if (r_light_sun_line->integer) {
-                VectorMA(backEnd.currentSphere->worldOrigin, 16384.0, s_sun.direction, end);
+            if (allowDebugLines && r_light_sun_line->integer) {
+                VectorMA(pSphere->worldOrigin, 16384.0, s_sun.direction, end);
 
-                VectorCopy(backEnd.currentEntity->e.origin, temppos);
-                MatrixTransformVectorRight(backEnd.currentEntity->e.axis, temppos, transpos);
+                VectorCopy(ent->e.origin, temppos);
+                MatrixTransformVectorRight(ent->e.axis, temppos, transpos);
 
                 GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
@@ -630,7 +635,7 @@ static void RB_Sphere_Light_Sun()
 
                 qglBegin(GL_LINES);
                 qglColor3f(0.0, 0.0, 0.0);
-                qglVertex3fv(backEnd.currentSphere->origin);
+                qglVertex3fv(pSphere->origin);
                 qglColor3f(0.5, 0.5, 0.5);
                 qglVertex3fv(transpos);
                 qglEnd();
@@ -647,18 +652,18 @@ static void RB_Sphere_Light_Sun()
         }
     }
 
-    VectorMA(backEnd.currentSphere->traceOrigin, 16384.0, s_sun.direction, end);
+    VectorMA(pSphere->traceOrigin, 16384.0, s_sun.direction, end);
     ri.CM_BoxTrace(
-        &trace, backEnd.currentSphere->traceOrigin, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_FENCE, 0
+        &trace, pSphere->traceOrigin, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_FENCE, 0
     );
 
     hitSun = (trace.surfaceFlags >> 2) & 1;
-    if (r_light_sun_line->integer) {
+    if (allowDebugLines && r_light_sun_line->integer) {
         vec3_t transpos;
         vec3_t temppos;
 
-        VectorSubtract(trace.endpos, backEnd.currentEntity->e.origin, temppos);
-        MatrixTransformVectorRight(backEnd.currentEntity->e.axis, temppos, transpos);
+        VectorSubtract(trace.endpos, ent->e.origin, temppos);
+        MatrixTransformVectorRight(ent->e.axis, temppos, transpos);
 
         GL_State(GLS_POLYMODE_LINE | GLS_DEPTHMASK_TRUE);
 
@@ -678,7 +683,7 @@ static void RB_Sphere_Light_Sun()
             qglColor3f(0.0, 0.0, 0.0);
         }
 
-        qglVertex3fv(backEnd.currentSphere->origin);
+        qglVertex3fv(pSphere->origin);
         qglColor3f(0.5, 0.5, 0.5);
         qglVertex3fv(transpos);
         qglEnd();
@@ -693,12 +698,9 @@ static void RB_Sphere_Light_Sun()
 
     if (hitSun) {
         vec3_t           sunnormal;
-        sphereor_t      *pSphere;
         reallightinfo_t *pLight;
 
-        pSphere = backEnd.currentSphere;
-
-        MatrixTransformVectorRight(backEnd.currentEntity->e.axis, s_sun.direction, sunnormal);
+        MatrixTransformVectorRight(ent->e.axis, s_sun.direction, sunnormal);
 
         pLight = &pSphere->light[pSphere->numRealLights];
         VectorScale(s_sun.color, r_entlight_scale->value, pLight->color);
@@ -712,25 +714,25 @@ static void RB_Sphere_Light_Sun()
     }
 }
 
-static qboolean RB_Sphere_CalculateSphereOrigin()
+static qboolean RB_Sphere_CalculateSphereOrigin(trRefEntity_t *ent, sphereor_t *pSphere)
 {
     vec3_t        *axis;
     vec3_t         sphereOrigin;
     trRefEntity_t *refent;
     trRefEntity_t *newref;
 
-    axis = backEnd.currentEntity->e.axis;
-    if (!backEnd.currentEntity->e.tiki) {
+    if (!ent || !ent->e.tiki) {
         return qfalse;
     }
+    axis = ent->e.axis;
 
-    backEnd.currentSphere->radius = backEnd.currentEntity->e.radius;
-    VectorCopy(backEnd.currentEntity->e.lightingOrigin, backEnd.currentSphere->worldOrigin);
+    pSphere->radius = ent->e.radius;
+    VectorCopy(ent->e.lightingOrigin, pSphere->worldOrigin);
 
-    VectorSubtract(backEnd.currentSphere->worldOrigin, backEnd.currentEntity->e.origin, sphereOrigin);
-    MatrixTransformVectorRight(axis, sphereOrigin, backEnd.currentSphere->origin);
+    VectorSubtract(pSphere->worldOrigin, ent->e.origin, sphereOrigin);
+    MatrixTransformVectorRight(axis, sphereOrigin, pSphere->origin);
 
-    for (refent = backEnd.currentEntity;; refent = newref) {
+    for (refent = ent;; refent = newref) {
         if (refent->e.parentEntity == ENTITYNUM_NONE) {
             break;
         }
@@ -741,57 +743,56 @@ static qboolean RB_Sphere_CalculateSphereOrigin()
         }
     }
 
-    VectorCopy(refent->e.lightingOrigin, backEnd.currentSphere->traceOrigin);
+    VectorCopy(refent->e.lightingOrigin, pSphere->traceOrigin);
 
     return qtrue;
 }
 
-static bool RB_Sphere_SetupGlobals()
+static bool RB_Sphere_SetupGlobals(trRefEntity_t *ent, sphereor_t *pSphere)
 {
     int i;
 
     if ((backEnd.refdef.rdflags & RDF_NOWORLDMODEL) && !(backEnd.refdef.rdflags & RDF_HUD)) {
-        backEnd.currentSphere->TessFunction = &RB_Light_Fullbright;
+        pSphere->TessFunction = &RB_Light_Fullbright;
         return false;
     }
 
     if (backEnd.refdef.rdflags & RDF_HUD) {
         if (!backEnd.refdef.vieworg[0] && !backEnd.refdef.vieworg[1] && !backEnd.refdef.vieworg[2]) {
-            backEnd.currentSphere->TessFunction = &RB_Light_Fullbright;
+            pSphere->TessFunction = &RB_Light_Fullbright;
             return false;
         }
 
-        VectorCopy(backEnd.refdef.vieworg, backEnd.currentSphere->worldOrigin);
-        VectorClear(backEnd.currentSphere->origin);
-        backEnd.currentSphere->radius = 2.0;
-    } else if (!RB_Sphere_CalculateSphereOrigin()) {
-        backEnd.currentSphere->TessFunction = &RB_CalcLightGridColor;
+        VectorCopy(backEnd.refdef.vieworg, pSphere->worldOrigin);
+        VectorClear(pSphere->origin);
+        pSphere->radius = 2.0;
+    } else if (!RB_Sphere_CalculateSphereOrigin(ent, pSphere)) {
+        pSphere->TessFunction = &RB_CalcLightGridColor;
 
-        if (!backEnd.currentEntity->bLightGridCalculated) {
+        if (ent && !ent->bLightGridCalculated) {
             RB_SetupEntityGridLighting();
         }
 
         return false;
     }
 
-    light_reference_count++;
     for (i = 0; i < 8; i++) {
-        backEnd.currentSphere->leaves[i] = 0;
+        pSphere->leaves[i] = 0;
     }
 
     R_SphereInLeafs(
-        backEnd.currentSphere->worldOrigin, backEnd.currentSphere->radius, backEnd.currentSphere->leaves, 8
+        pSphere->worldOrigin, pSphere->radius, pSphere->leaves, 8
     );
 
-    backEnd.currentSphere->TessFunction = &RB_Light_Real;
+    pSphere->TessFunction = &RB_Light_Real;
     return true;
 }
 
-static bool RB_Sphere_ResetPointColors()
+static bool RB_Sphere_ResetPointColors(sphereor_t *pSphere)
 {
     vec3_t light_offset, amb;
 
-    R_GetLightingGridValue(backEnd.currentSphere->worldOrigin, light_offset);
+    R_GetLightingGridValue(pSphere->worldOrigin, light_offset);
     light_offset[0] = ambientlight[0] + light_offset[0] * 0.18;
     light_offset[1] = ambientlight[1] + light_offset[1] * 0.18;
     light_offset[2] = ambientlight[2] + light_offset[2] * 0.18;
@@ -806,21 +807,21 @@ static bool RB_Sphere_ResetPointColors()
     }
 
     VectorScale(light_offset, tr.overbrightMult * r_entlight_scale->value, amb);
-    backEnd.currentSphere->ambient.level[0] = Q_min(amb[0], 0xff);
-    backEnd.currentSphere->ambient.level[1] = Q_min(amb[1], 0xff);
-    backEnd.currentSphere->ambient.level[2] = Q_min(amb[2], 0xff);
-    backEnd.currentSphere->ambient.level[3] = 0xff;
+    pSphere->ambient.level[0] = Q_min(amb[0], 0xff);
+    pSphere->ambient.level[1] = Q_min(amb[1], 0xff);
+    pSphere->ambient.level[2] = Q_min(amb[2], 0xff);
+    pSphere->ambient.level[3] = 0xff;
 
     return true;
 }
 
-static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, const vec3_t origin)
+static void RB_Sphere_DrawDebugLine(trRefEntity_t *ent, sphereor_t *pSphere, const spherel_t *thislight, float falloff, const vec3_t origin, qboolean allowDebugLines)
 {
     int    i;
     vec3_t newColor;
     vec3_t fakeLine, fakeLine2;
 
-    if (!r_light_lines->integer) {
+    if (!allowDebugLines || !r_light_lines->integer) {
         return;
     }
 
@@ -854,7 +855,7 @@ static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, c
 
     qglBegin(GL_LINES);
     qglVertex3fv(origin);
-    qglVertex3fv(backEnd.currentSphere->origin);
+    qglVertex3fv(pSphere->origin);
 
     for (i = 0; i < 5; i += 2) {
         VectorMA(origin, 16.0, spheredef[i], fakeLine);
@@ -867,7 +868,7 @@ static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, c
     if (thislight->spot_light) {
         qglColor3f(0.7, 1.0, 0.7);
 
-        MatrixTransformVectorRight(backEnd.currentEntity->e.axis, thislight->spot_dir, fakeLine);
+        MatrixTransformVectorRight(ent->e.axis, thislight->spot_dir, fakeLine);
         VectorMA(origin, 32.0, fakeLine, fakeLine);
 
         qglVertex3fv(origin);
@@ -881,7 +882,7 @@ static void RB_Sphere_DrawDebugLine(const spherel_t *thislight, float falloff, c
     qglPopMatrix();
 }
 
-static void RB_Sphere_AddSpotLight(const spherel_t *thislight)
+static void RB_Sphere_AddSpotLight(trRefEntity_t *ent, sphereor_t *pSphere, const spherel_t *thislight, qboolean allowDebugLines)
 {
     vec3_t lightorigin;
     vec3_t newlight;
@@ -890,9 +891,7 @@ static void RB_Sphere_AddSpotLight(const spherel_t *thislight)
     float  falloff;
     float  dot;
     float  radiusByDistance;
-    float  radiusAtDist;
     float  sampleRadius;
-    vec3_t pointAtDist;
 
     radiusByDistance = thislight->spot_radiusbydistance;
     if (radiusByDistance < 0) {
@@ -901,7 +900,7 @@ static void RB_Sphere_AddSpotLight(const spherel_t *thislight)
         float  distfromcentroid;
 
         dot =
-            -(DotProduct(backEnd.currentSphere->worldOrigin, thislight->spot_dir)
+            -(DotProduct(pSphere->worldOrigin, thislight->spot_dir)
               - DotProduct(thislight->origin, thislight->spot_dir));
         VectorMA(thislight->origin, dot, thislight->spot_dir, proj);
         VectorSubtract(proj, thislight->origin, delta);
@@ -911,22 +910,22 @@ static void RB_Sphere_AddSpotLight(const spherel_t *thislight)
             VectorScale(delta, -radiusByDistance / sqrt(distfromcentroid), delta);
         }
 
-        VectorSubtract(thislight->origin, backEnd.currentEntity->e.origin, lightorigin);
+        VectorSubtract(thislight->origin, ent->e.origin, lightorigin);
         VectorAdd(lightorigin, delta, lightorigin);
     } else {
-        VectorSubtract(thislight->origin, backEnd.currentEntity->e.origin, lightorigin);
+        VectorSubtract(thislight->origin, ent->e.origin, lightorigin);
     }
 
-    MatrixTransformVectorRight(backEnd.currentEntity->e.axis, lightorigin, lightline);
-    VectorSubtract(lightline, backEnd.currentSphere->origin, newlight);
+    MatrixTransformVectorRight(ent->e.axis, lightorigin, lightline);
+    VectorSubtract(lightline, pSphere->origin, newlight);
 
-    falloff = thislight->intensity * 7500.0 / VectorLengthSquared(newlight);
+    falloff = thislight->intensity * 7500.0 / Q_max(VectorLengthSquared(newlight), 1.0f);
     if (falloff >= 5.0) {
         reallightinfo_t *pLight;
         float            fMinDist;
         float            fRadByDistSquared;
 
-        MatrixTransformVectorRight(backEnd.currentEntity->e.axis, thislight->spot_dir, newdir);
+        MatrixTransformVectorRight(ent->e.axis, thislight->spot_dir, newdir);
         dot = -DotProduct(newlight, newdir);
         if (dot > 0) {
             fMinDist = sqrt(
@@ -934,8 +933,8 @@ static void RB_Sphere_AddSpotLight(const spherel_t *thislight)
                 + Square(newlight[2] + newdir[2] * dot)
             );
 
-            if (fMinDist < radiusByDistance * dot && backEnd.currentSphere->numRealLights < MAX_REAL_LIGHTS) {
-                pLight = &backEnd.currentSphere->light[backEnd.currentSphere->numRealLights];
+            if (fMinDist < radiusByDistance * dot && pSphere->numRealLights < MAX_REAL_LIGHTS) {
+                pLight = &pSphere->light[pSphere->numRealLights];
 
                 pLight->eType = LIGHT_SPOT;
                 VectorScale(thislight->color, thislight->intensity * 7500.0 * tr.overbrightMult, pLight->color);
@@ -944,7 +943,7 @@ static void RB_Sphere_AddSpotLight(const spherel_t *thislight)
                     (thislight->color[0] * 0.299f + thislight->color[1] * 0.587f + thislight->color[2] * 0.114f)
                     * (thislight->intensity * 7500.0 * tr.overbrightMult);
 
-                sampleRadius = pLight->fDist - backEnd.currentSphere->radius;
+                sampleRadius = pLight->fDist - pSphere->radius;
                 if (sampleRadius > 0) {
                     pLight->fIntensity /= (sampleRadius * sampleRadius);
                 }
@@ -956,15 +955,15 @@ static void RB_Sphere_AddSpotLight(const spherel_t *thislight)
                 pLight->fSpotScale = 1.0 / (fRadByDistSquared * 0.19);
                 pLight->fSpotSlope = radiusByDistance;
 
-                backEnd.currentSphere->numRealLights++;
+                pSphere->numRealLights++;
             }
 
-            RB_Sphere_DrawDebugLine(thislight, falloff, lightline);
+            RB_Sphere_DrawDebugLine(ent, pSphere, thislight, falloff, lightline, allowDebugLines);
         }
     }
 }
 
-static void RB_Sphere_AddLight(const spherel_t *thislight)
+static void RB_Sphere_AddLight(trRefEntity_t *ent, sphereor_t *pSphere, const spherel_t *thislight, qboolean allowDebugLines)
 {
     vec3_t lightorigin;
     vec3_t newlight;
@@ -972,11 +971,11 @@ static void RB_Sphere_AddLight(const spherel_t *thislight)
     float  intensity;
     float  falloff;
 
-    if (thislight->intensity > 0 && (backEnd.currentEntity->e.renderfx & RF_INVISIBLE)) {
+    if (thislight->intensity > 0 && (ent->e.renderfx & RF_INVISIBLE)) {
         return;
     }
 
-    if (thislight->intensity < 0 && !(backEnd.currentEntity->e.renderfx & RF_INVISIBLE)) {
+    if (thislight->intensity < 0 && !(ent->e.renderfx & RF_INVISIBLE)) {
         return;
     }
 
@@ -984,7 +983,7 @@ static void RB_Sphere_AddLight(const spherel_t *thislight)
         trace_t trace;
         ri.CM_BoxTrace(
             &trace,
-            backEnd.currentSphere->traceOrigin,
+            pSphere->traceOrigin,
             thislight->origin,
             vec3_origin,
             vec3_origin,
@@ -1003,17 +1002,17 @@ static void RB_Sphere_AddLight(const spherel_t *thislight)
         float            fDist;
         float            fRadius;
 
-        VectorSubtract(thislight->origin, backEnd.currentEntity->e.origin, lightorigin);
-        MatrixTransformVectorRight(backEnd.currentEntity->e.axis, lightorigin, lightline);
-        VectorSubtract(lightline, backEnd.currentSphere->origin, newlight);
+        VectorSubtract(thislight->origin, ent->e.origin, lightorigin);
+        MatrixTransformVectorRight(ent->e.axis, lightorigin, lightline);
+        VectorSubtract(lightline, pSphere->origin, newlight);
 
         intensity = fabs(thislight->intensity) * 7500.0;
-        falloff   = 1.f / VectorLengthSquared(newlight) * intensity;
+        falloff   = 1.f / Q_max(VectorLengthSquared(newlight), 1.0f) * intensity;
         if (falloff >= 5.0) {
-            RB_Sphere_DrawDebugLine(thislight, falloff, lightline);
+            RB_Sphere_DrawDebugLine(ent, pSphere, thislight, falloff, lightline, allowDebugLines);
 
-            if (backEnd.currentSphere->numRealLights < MAX_REAL_LIGHTS) {
-                pLight = &backEnd.currentSphere->light[backEnd.currentSphere->numRealLights];
+            if (pSphere->numRealLights < MAX_REAL_LIGHTS) {
+                pLight = &pSphere->light[pSphere->numRealLights];
 
                 fDist = VectorLength(newlight);
                 VectorScale(
@@ -1025,30 +1024,32 @@ static void RB_Sphere_AddLight(const spherel_t *thislight)
                 pLight->eType      = LIGHT_POINT;
                 pLight->fIntensity = pLight->color[0] * 0.299f + pLight->color[1] * 0.587f + pLight->color[2] * 0.114f;
 
-                fRadius = fDist - backEnd.currentSphere->radius;
+                fRadius = fDist - pSphere->radius;
                 if (fRadius > 0) {
                     pLight->fIntensity /= fRadius;
                 }
 
-                backEnd.currentSphere->numRealLights++;
+                pSphere->numRealLights++;
             }
         }
     } else {
-        RB_Sphere_AddSpotLight(thislight);
+        RB_Sphere_AddSpotLight(ent, pSphere, thislight, allowDebugLines);
     }
 }
 
-static void RB_Sphere_BuildStaticLights()
+static void RB_Sphere_BuildStaticLights(trRefEntity_t *ent, sphereor_t *pSphere, qboolean allowDebugLines)
 {
-    int      i;
-    int      curleaf;
-    mnode_t *leaf;
+    int              i, k;
+    int              curleaf;
+    mnode_t         *leaf;
+    const spherel_t *seenLights[256];
+    int              numSeen = 0;
 
     if (tr.world->vis) {
         int cntarea;
 
         for (curleaf = 0; curleaf < 8; curleaf++) {
-            leaf = backEnd.currentSphere->leaves[curleaf];
+            leaf = pSphere->leaves[curleaf];
             if (!leaf) {
                 break;
             }
@@ -1060,21 +1061,32 @@ static void RB_Sphere_BuildStaticLights()
                     spherel_t *pLight = leaf->lights[i];
                     byte       mask   = backEnd.refdef.areamask[pLight->leaf->area >> 3];
 
-                    if (!(mask & (1 << (pLight->leaf->area & 7))) && pLight->reference_count != light_reference_count) {
-                        RB_Sphere_AddLight(pLight);
-                        pLight->reference_count = light_reference_count;
+                    if (!(mask & (1 << (pLight->leaf->area & 7)))) {
+                        qboolean alreadySeen = qfalse;
+                        for (k = 0; k < numSeen; k++) {
+                            if (seenLights[k] == pLight) {
+                                alreadySeen = qtrue;
+                                break;
+                            }
+                        }
+                        if (!alreadySeen) {
+                            if (numSeen < 256) {
+                                seenLights[numSeen++] = pLight;
+                            }
+                            RB_Sphere_AddLight(ent, pSphere, pLight, allowDebugLines);
+                        }
                     }
                 }
             }
         }
     } else {
         for (i = 0; i < tr.numSLights; i++) {
-            RB_Sphere_AddLight(&tr.sLights[i]);
+            RB_Sphere_AddLight(ent, pSphere, &tr.sLights[i], allowDebugLines);
         }
     }
 }
 
-void RB_Sphere_BuildDLights()
+static void RB_Sphere_BuildDLightsFor(trRefEntity_t *ent, sphereor_t *pSphere)
 {
     int              i;
     float            length;
@@ -1082,11 +1094,9 @@ void RB_Sphere_BuildDLights()
     vec3_t           delta;
     float            scale;
     float            fRadius;
-    sphereor_t      *pSphere;
     reallightinfo_t *pLight;
 
-    pSphere                             = backEnd.currentSphere;
-    backEnd.currentSphere->TessFunction = RB_Light_Real;
+    pSphere->TessFunction = RB_Light_Real;
 
     for (i = 0; i < backEnd.refdef.num_dlights && pSphere->numRealLights < MAX_REAL_LIGHTS; i++) {
         VectorSubtract(backEnd.refdef.dlights[i].origin, pSphere->worldOrigin, delta);
@@ -1097,23 +1107,42 @@ void RB_Sphere_BuildDLights()
             continue;
         }
 
-        VectorSubtract(backEnd.refdef.dlights[i].origin, backEnd.currentEntity->e.origin, lightorigin);
-        scale  = r_entlight_scale->value * tr.overbrightMult * 7500.0 * backEnd.refdef.dlights[i].radius / length;
+        VectorSubtract(backEnd.refdef.dlights[i].origin, ent->e.origin, lightorigin);
+        scale  = r_entlight_scale->value * tr.overbrightMult * 7500.0 * backEnd.refdef.dlights[i].radius
+               / Q_max(length, 1.0f);
         pLight = &pSphere->light[pSphere->numRealLights];
         pLight->color[0] = scale * backEnd.refdef.dlights[i].color[0];
         pLight->color[1] = scale * backEnd.refdef.dlights[i].color[1];
         pLight->color[2] = scale * backEnd.refdef.dlights[i].color[2];
-        MatrixTransformVectorRight(backEnd.currentEntity->e.axis, lightorigin, pLight->vOrigin);
+        MatrixTransformVectorRight(ent->e.axis, lightorigin, pLight->vOrigin);
 
         pLight->eType      = LIGHT_POINT;
         pLight->fDist      = length;
         pLight->fIntensity = pLight->color[0] * 0.299f + pLight->color[1] * 0.587f + pLight->color[2] * 0.114f;
 
-        if (pLight->fDist - backEnd.currentSphere->radius >= 0.f) {
-            pLight->fIntensity /= pLight->fDist - backEnd.currentSphere->radius;
+        if (pLight->fDist - pSphere->radius > 0.f) {
+            pLight->fIntensity /= pLight->fDist - pSphere->radius;
         }
 
-        backEnd.currentSphere->numRealLights++;
+        pSphere->numRealLights++;
+    }
+}
+
+void RB_Sphere_BuildDLights()
+{
+    RB_Sphere_BuildDLightsFor(backEnd.currentEntity, backEnd.currentSphere);
+}
+
+void RB_Sphere_SetupEntityFor(trRefEntity_t *ent, sphereor_t *pSphere)
+{
+    if (r_light_nolight->integer) {
+        pSphere->TessFunction = &RB_Light_Fullbright;
+    } else if (RB_Sphere_SetupGlobals(ent, pSphere) && RB_Sphere_ResetPointColors(pSphere)) {
+        pSphere->numRealLights = 0;
+        RB_Sphere_Light_Sun(ent, pSphere, qfalse);
+        RB_Sphere_BuildStaticLights(ent, pSphere, qfalse);
+        RB_Sphere_BuildDLightsFor(ent, pSphere);
+        RB_OptimizeLightsFor(pSphere);
     }
 }
 
@@ -1121,13 +1150,13 @@ void RB_Sphere_SetupEntity()
 {
     if (r_light_nolight->integer) {
         backEnd.currentSphere->TessFunction = &RB_Light_Fullbright;
-    } else if (RB_Sphere_SetupGlobals() && RB_Sphere_ResetPointColors()) {
+    } else if (RB_Sphere_SetupGlobals(backEnd.currentEntity, backEnd.currentSphere) && RB_Sphere_ResetPointColors(backEnd.currentSphere)) {
         backEnd.currentSphere->numRealLights = 0;
-        RB_Sphere_Light_Sun();
-        RB_Sphere_BuildStaticLights();
-        RB_Sphere_BuildDLights();
+        RB_Sphere_Light_Sun(backEnd.currentEntity, backEnd.currentSphere, qtrue);
+        RB_Sphere_BuildStaticLights(backEnd.currentEntity, backEnd.currentSphere, qtrue);
+        RB_Sphere_BuildDLightsFor(backEnd.currentEntity, backEnd.currentSphere);
         backEnd.pc.c_characterlights += backEnd.currentSphere->numRealLights;
-        RB_OptimizeLights();
+        RB_OptimizeLightsFor(backEnd.currentSphere);
     }
 }
 
@@ -1272,7 +1301,7 @@ void R_Sphere_InitLights()
             }
 
             ret = COM_Parse((char **)&ents);
-            if (strcmp(ret, "world") || strcmp(ret, "none")) {
+            if (strcmp(ret, "world") && strcmp(ret, "none")) {
                 bEntityOverbright  = qtrue;
                 iEntityLightingMax = 0xFF;
             }
@@ -1289,13 +1318,15 @@ void R_Sphere_InitLights()
 static qboolean R_CheckAddLightToList(spherel_t *pLight, const vec3_t vPos, float *pfFalloff)
 {
     vec3_t vDelta;
+    float  fDistSq;
 
     if (pLight->intensity < 0) {
         return qfalse;
     }
 
     VectorSubtract(pLight->origin, vPos, vDelta);
-    *pfFalloff = pLight->intensity * 7500.0 / VectorLengthSquared(vDelta);
+    fDistSq    = VectorLengthSquared(vDelta);
+    *pfFalloff = pLight->intensity * 7500.0f / Q_max(fDistSq, 1.0f);
 
     return *pfFalloff >= 5.0;
 }

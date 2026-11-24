@@ -26,13 +26,19 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../corepp/tiki.h"
 #include "../corepp/vector.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include <arm_neon.h>
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+#include <xmmintrin.h>
+#endif
+
 #define LL(x) x = LittleLong(x)
 
 qboolean   g_bInfoworldtris = qfalse;
 static int entityNumIndexes[MAX_ENTITIES];
 static int staticModelNumIndexes[4095];
 
-static int R_CullSkelModel(dtiki_t *tiki, refEntity_t *e, skelAnimFrame_t *newFrame, float fScale, float *vLocalOrg);
+static int R_CullSkelModel(dtiki_t *tiki, refEntity_t *e, const vec3_t frameMin, const vec3_t frameMax, float fScale, float *vLocalOrg);
 
 /*
 ** R_GetModelByHandle
@@ -159,7 +165,7 @@ void R_RegisterShaders(model_t *mod)
 */
 void RE_UnregisterServerModel(qhandle_t hModel)
 {
-    if (hModel < 0 || hModel >= MAX_MOD_KNOWN) {
+    if (hModel < 0 || hModel >= tr.numModels || !tr.models[hModel]) {
         return;
     }
 
@@ -480,8 +486,12 @@ int GetLodCutoff(skelHeaderGame_t *skelmodel, float lod_val, int renderfx)
     if (renderfx & RF_DEPTHHACK) {
         fLODCap = LOD->maxMetric + (LOD->minMetric - LOD->maxMetric) * r_lodviewmodelcap->value;
     } else {
+        float effScale = r_lodscale->value;
+        if (r_extendedLod && r_extendedLod->integer) {
+            effScale *= 1.45f;
+        }
         f       = (LOD->minMetric - LOD->maxMetric) * r_lodcap->value + LOD->maxMetric;
-        fLODCap = (lod_val - LOD->maxMetric) * r_lodscale->value + LOD->maxMetric;
+        fLODCap = (lod_val - LOD->maxMetric) * effScale + LOD->maxMetric;
 
         if (fLODCap > f) {
             fLODCap = f;
@@ -654,7 +664,9 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
         vmEntity = ri.Cvar_Get("viewmodelentity", "", 0);
     }
 
-    R_UpdatePoseInternal(&ent->e);
+    if (!ent->skelCached) {
+        R_UpdatePoseInternal(&ent->e);
+    }
 
     // don't add third_person objects if in a portal
     personalModel = (ent->e.renderfx & RF_THIRD_PERSON) && !tr.viewParms.isPortal;
@@ -663,7 +675,7 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
 
     num_tags = ri.TIKI_GetNumChannels(tiki);
 
-    if (num_tags + TIKI_Skel_Bones_Index > MAX_SKELBONES) {
+    if (!ent->skelCached && num_tags + TIKI_Skel_Bones_Index > MAX_SKELBONES) {
         ri.Printf(PRINT_DEVELOPER, "R_AddSkelSurfaces: too many skeleton models visible on '%s'\n", tiki->a->name);
         return;
     }
@@ -672,20 +684,30 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
     VectorScale(tiki->load_origin, tiki_scale, tiki_localorigin);
     R_LocalPointToWorld(tiki_localorigin, tiki_worldorigin);
 
-    radius = R_GetRadius(&ent->e);
+    radius = ent->skelCached ? ent->skelRadius : R_GetRadius(&ent->e);
 
-    if (!lod_tool->integer) {
-        iRadiusCull = R_CullPointAndRadius(tiki_worldorigin, radius);
+    if (!lod_tool->integer && !(ent->e.renderfx & (RF_DEPTHHACK | RF_FIRST_PERSON))
+        && !(tr.refdef.rdflags & RDF_HUD)) {
+        float animRadius = RadiusFromBounds(tiki->a->mins, tiki->a->maxs) * tiki_scale;
+        float cullRadius = Q_max(radius, animRadius);
+
+        if (ent->e.renderfx & RF_FRAMELERP) {
+            vec3_t delta;
+            VectorSubtract(ent->e.origin, ent->e.oldorigin, delta);
+            cullRadius += VectorLength(delta);
+        }
+
+        iRadiusCull = R_CullPointAndRadius(tiki_worldorigin, cullRadius);
         if (r_showcull->integer & 2) {
             switch (iRadiusCull) {
             case CULL_IN:
-                R_DebugCircle(tiki_worldorigin, radius * 1.2f, 0, 1, 0, 0.5f, qfalse);
+                R_DebugCircle(tiki_worldorigin, cullRadius * 1.2f, 0, 1, 0, 0.5f, qfalse);
                 break;
             case CULL_CLIP:
-                R_DebugCircle(tiki_worldorigin, radius * 1.2f, 0, 1, 0, 0.5f, qfalse);
+                R_DebugCircle(tiki_worldorigin, cullRadius * 1.2f, 0, 1, 0, 0.5f, qfalse);
                 break;
             case CULL_OUT:
-                R_DebugCircle(tiki_worldorigin, radius * 1.2f + 32.f, 1, 0.2f, 0.2f, 0.5f, qfalse);
+                R_DebugCircle(tiki_worldorigin, cullRadius * 1.2f + 32.f, 1, 0.2f, 0.2f, 0.5f, qfalse);
                 break;
             }
         }
@@ -699,7 +721,7 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
             break;
         case CULL_OUT:
             tr.pc.c_sphere_cull_md3_out++;
-            break;
+            return;
         }
     }
 
@@ -717,18 +739,24 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
         }
     }
 
-    newFrame = (skelAnimFrame_t *)ri.Hunk_AllocateTempMemory(
-        sizeof(skelAnimFrame_t) + ri.TIKI_GetNumChannels(tiki) * sizeof(SkelMat4)
-    );
-    R_GetFrame(&ent->e, newFrame);
+    if (!ent->skelCached) {
+        newFrame = (skelAnimFrame_t *)ri.Hunk_AllocateTempMemory(
+            sizeof(skelAnimFrame_t) + ri.TIKI_GetNumChannels(tiki) * sizeof(SkelMat4)
+        );
+        R_GetFrame(&ent->e, newFrame);
 
-    if (lod_tool->integer || iRadiusCull != CULL_CLIP
-        || R_CullSkelModel(tiki, &ent->e, newFrame, tiki_scale, tiki_localorigin) != CULL_OUT) {
+        if (!lod_tool->integer && iRadiusCull == CULL_CLIP
+            && R_CullSkelModel(tiki, &ent->e, newFrame->bounds[0], newFrame->bounds[1], tiki_scale, tiki_localorigin) == CULL_OUT) {
+            ri.Hunk_FreeTempMemory(newFrame);
+            return;
+        }
+
         //
         // copy bones position and axis
         //
         for (i = 0; i < num_tags; i++) {
             VectorCopy(newFrame->bones[i][3], outbones->offset);
+            outbones->offset[3]    = 0;
             outbones->matrix[0][0] = newFrame->bones[i][0][0];
             outbones->matrix[0][1] = newFrame->bones[i][0][1];
             outbones->matrix[0][2] = newFrame->bones[i][0][2];
@@ -743,32 +771,41 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
             outbones->matrix[2][3] = 0;
             outbones++;
         }
-    }
 
-    ri.Hunk_FreeTempMemory(newFrame);
+        VectorCopy(newFrame->bounds[0], ent->skelBounds[0]);
+        VectorCopy(newFrame->bounds[1], ent->skelBounds[1]);
+        ent->skelRadius = radius;
 
-    ent->e.bonestart = TIKI_Skel_Bones_Index;
-    TIKI_Skel_Bones_Index += num_tags;
+        ri.Hunk_FreeTempMemory(newFrame);
 
-    ent->e.hasMorph = qfalse;
+        ent->e.bonestart = TIKI_Skel_Bones_Index;
+        TIKI_Skel_Bones_Index += num_tags;
 
-    //
-    // get the skeletor
-    //
-    skeletor = (skeletor_c *)ri.TIKI_GetSkeletor(tiki, ent->e.entityNumber);
+        ent->e.hasMorph = qfalse;
 
-    //
-    // add morphs
-    //
-    added = ri.SKEL_GetMorphWeightFrame(
-        skeletor, ent->e.frameInfo[0].index, ent->e.frameInfo[0].time, &skeletorMorphCache[skeletorMorphCacheIndex]
-    );
-    ent->e.morphstart = skeletorMorphCacheIndex;
+        //
+        // get the skeletor
+        //
+        skeletor = (skeletor_c *)ri.TIKI_GetSkeletor(tiki, ent->e.entityNumber);
 
-    if (added) {
-        // found morphs
-        skeletorMorphCacheIndex += added;
-        ent->e.hasMorph = qtrue;
+        //
+        // add morphs
+        //
+        added = ri.SKEL_GetMorphWeightFrame(
+            skeletor, ent->e.frameInfo[0].index, ent->e.frameInfo[0].time, &skeletorMorphCache[skeletorMorphCacheIndex]
+        );
+        ent->e.morphstart = skeletorMorphCacheIndex;
+
+        if (added) {
+            // found morphs
+            skeletorMorphCacheIndex += added;
+            ent->e.hasMorph = qtrue;
+        }
+
+        ent->skelCached = qtrue;
+    } else if (!lod_tool->integer && iRadiusCull == CULL_CLIP
+               && R_CullSkelModel(tiki, &ent->e, ent->skelBounds[0], ent->skelBounds[1], tiki_scale, tiki_localorigin) == CULL_OUT) {
+        return;
     }
 
     //
@@ -821,7 +858,11 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
             }
 
             if (!personalModel) {
-                if ((*bsurf & 0x40) && (dsurf->numskins > 1)) {
+                if (tr.viewParms.flags & VPF_PISUNSHADOW) {
+                    if (R_ShaderCastsSunShadow(shader)) {
+                        R_AddDrawSurf((surfaceType_t *)surface, shader, 0, 0, 0, 0);
+                    }
+                } else if ((*bsurf & 0x40) && (dsurf->numskins > 1)) {
                     int iShaderNum = ent->e.skinNum + (*bsurf & 2);
 
                     R_AddDrawSurf((surfaceType_t *)surface, tr.shaders[dsurf->hShader[iShaderNum]], 0, 0, 0, 0);
@@ -831,7 +872,7 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
                 }
             }
 
-            if ((ent->e.customShader) && (ent->e.renderfx & RF_CUSTOMSHADERPASS)) {
+            if (!(tr.viewParms.flags & VPF_PISUNSHADOW) && (ent->e.customShader) && (ent->e.renderfx & RF_CUSTOMSHADERPASS)) {
                 shader = R_GetShaderByHandle(ent->e.customShader);
                 R_AddDrawSurf((surfaceType_t *)surface, shader, 0, 0, 0, 0);
             }
@@ -848,6 +889,22 @@ SkelVertGetNormal
 */
 inline static void SkelVertGetNormal(skeletorVertex_t *vert, skelBoneCache_t *bone, vec3_t out)
 {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    float32x4_t res = vmulq_n_f32(vld1q_f32(bone->matrix[0]), vert->normal[0]);
+    res             = vfmaq_n_f32(res, vld1q_f32(bone->matrix[1]), vert->normal[1]);
+    res             = vfmaq_n_f32(res, vld1q_f32(bone->matrix[2]), vert->normal[2]);
+    vst1_f32(out, vget_low_f32(res));
+    vst1q_lane_f32(&out[2], res, 2);
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+    __m128 res = _mm_mul_ps(_mm_loadu_ps(bone->matrix[0]), _mm_set1_ps(vert->normal[0]));
+    res        = _mm_add_ps(res, _mm_mul_ps(_mm_loadu_ps(bone->matrix[1]), _mm_set1_ps(vert->normal[1])));
+    res        = _mm_add_ps(res, _mm_mul_ps(_mm_loadu_ps(bone->matrix[2]), _mm_set1_ps(vert->normal[2])));
+    float t[4];
+    _mm_storeu_ps(t, res);
+    out[0] = t[0];
+    out[1] = t[1];
+    out[2] = t[2];
+#else
     out[0] = vert->normal[0] * bone->matrix[0][0] + vert->normal[1] * bone->matrix[1][0]
            + vert->normal[2] * bone->matrix[2][0];
 
@@ -856,6 +913,7 @@ inline static void SkelVertGetNormal(skeletorVertex_t *vert, skelBoneCache_t *bo
 
     out[2] = vert->normal[0] * bone->matrix[0][2] + vert->normal[1] * bone->matrix[1][2]
            + vert->normal[2] * bone->matrix[2][2];
+#endif
 }
 
 /*
@@ -875,6 +933,29 @@ SkelWeightGetXyz
 */
 inline static void SkelWeightGetXyz(skelWeight_t *weight, skelBoneCache_t *bone, vec3_t out)
 {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    float32x4_t pos = vld1q_f32(bone->offset);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[0]), weight->offset[0]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[1]), weight->offset[1]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[2]), weight->offset[2]);
+    pos             = vmulq_n_f32(pos, weight->boneWeight);
+
+    float32x4_t cur = vcombine_f32(vld1_f32(out), vld1_dup_f32(&out[2]));
+    cur             = vaddq_f32(cur, pos);
+    vst1_f32(out, vget_low_f32(cur));
+    vst1q_lane_f32(&out[2], cur, 2);
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+    __m128 pos = _mm_loadu_ps(bone->offset);
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[0]), _mm_set1_ps(weight->offset[0])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[1]), _mm_set1_ps(weight->offset[1])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[2]), _mm_set1_ps(weight->offset[2])));
+    pos        = _mm_mul_ps(pos, _mm_set1_ps(weight->boneWeight));
+    float t[4];
+    _mm_storeu_ps(t, pos);
+    out[0] += t[0];
+    out[1] += t[1];
+    out[2] += t[2];
+#else
     out[0] += ((weight->offset[0] * bone->matrix[0][0] + weight->offset[1] * bone->matrix[1][0]
                 + weight->offset[2] * bone->matrix[2][0])
                + bone->offset[0])
@@ -889,6 +970,7 @@ inline static void SkelWeightGetXyz(skelWeight_t *weight, skelBoneCache_t *bone,
                 + weight->offset[2] * bone->matrix[2][2])
                + bone->offset[2])
             * weight->boneWeight;
+#endif
 }
 
 /*
@@ -902,6 +984,29 @@ inline static void SkelWeightMorphGetXyz(skelWeight_t *weight, skelBoneCache_t *
 
     VectorAdd(totalmorph, weight->offset, point);
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+    float32x4_t pos = vld1q_f32(bone->offset);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[0]), point[0]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[1]), point[1]);
+    pos             = vfmaq_n_f32(pos, vld1q_f32(bone->matrix[2]), point[2]);
+    pos             = vmulq_n_f32(pos, weight->boneWeight);
+
+    float32x4_t cur = vcombine_f32(vld1_f32(out), vld1_dup_f32(&out[2]));
+    cur             = vaddq_f32(cur, pos);
+    vst1_f32(out, vget_low_f32(cur));
+    vst1q_lane_f32(&out[2], cur, 2);
+#elif defined(__SSE__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 1)
+    __m128 pos = _mm_loadu_ps(bone->offset);
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[0]), _mm_set1_ps(point[0])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[1]), _mm_set1_ps(point[1])));
+    pos        = _mm_add_ps(pos, _mm_mul_ps(_mm_loadu_ps(bone->matrix[2]), _mm_set1_ps(point[2])));
+    pos        = _mm_mul_ps(pos, _mm_set1_ps(weight->boneWeight));
+    float t[4];
+    _mm_storeu_ps(t, pos);
+    out[0] += t[0];
+    out[1] += t[1];
+    out[2] += t[2];
+#else
     out[0] += ((point[0] * bone->matrix[0][0] + point[1] * bone->matrix[1][0] + point[2] * bone->matrix[2][0])
                + bone->offset[0])
             * weight->boneWeight;
@@ -913,6 +1018,7 @@ inline static void SkelWeightMorphGetXyz(skelWeight_t *weight, skelBoneCache_t *
     out[2] += ((point[0] * bone->matrix[0][2] + point[1] * bone->matrix[1][2] + point[2] * bone->matrix[2][2])
                + bone->offset[2])
             * weight->boneWeight;
+#endif
 }
 
 /*
@@ -1039,6 +1145,7 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
     }
 
     indexes = sf->numTriangles * 3;
+    RB_CheckVao(tess.vao);
     RB_CHECKOVERFLOW(render_count, indexes);
 
     collapse_map = sf->pCollapse;
@@ -1095,13 +1202,22 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
     bones  = &TIKI_Skel_Bones[backEnd.currentEntity->e.bonestart];
     morphs = &skeletorMorphCache[backEnd.currentEntity->e.morphstart];
 
+    int localChannels[256];
+    int numMappedBones = 0;
+    if (mesh > 0) {
+        numMappedBones = Q_min(skelmodel->numBones, (int)ARRAY_LEN(localChannels));
+        for (i = 0; i < numMappedBones; i++) {
+            localChannels[i] = ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[i].channel);
+        }
+    }
+
     if (backEnd.currentEntity->e.hasMorph) {
         if (mesh > 0) {
             for (vertNum = 0; vertNum < render_count; vertNum++) {
                 vec3_t normal;
                 vec3_t out;
                 vec3_t totalmorph;
-                int    channelNum;
+                int    boneIdx;
                 int    boneNum;
 
                 VectorClear(out);
@@ -1122,21 +1238,18 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
                     morph++;
                 }
 
-                if (newVerts->numMorphs) {
-                    channelNum = skelmodel->pBones[morph->morphIndex].channel;
-                } else {
-                    channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                }
-
-                boneNum = ri.TIKI_GetLocalChannel(tiki, channelNum);
+                boneIdx = weight->boneIndex;
+                boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                     : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
                 bone    = &bones[boneNum];
 
                 SkelVertGetNormal(newVerts, bone, normal);
 
                 for (weightNum = 0; weightNum < newVerts->numWeights; weightNum++) {
-                    channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                    boneNum    = ri.TIKI_GetLocalChannel(tiki, channelNum);
-                    bone       = &bones[boneNum];
+                    boneIdx = weight->boneIndex;
+                    boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                         : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
+                    bone    = &bones[boneNum];
 
                     if (!weightNum) {
                         SkelWeightMorphGetXyz(weight, bone, totalmorph, out);
@@ -1184,11 +1297,7 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
                     morph++;
                 }
 
-                if (newVerts->numMorphs) {
-                    bone = &bones[morph->morphIndex];
-                } else {
-                    bone = &bones[weight->boneIndex];
-                }
+                bone = &bones[weight->boneIndex];
 
                 SkelVertGetNormal(newVerts, bone, normal);
 
@@ -1223,7 +1332,7 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
             for (vertNum = 0; vertNum < render_count; vertNum++) {
                 vec3_t normal;
                 vec3_t out;
-                int    channelNum;
+                int    boneIdx;
                 int    boneNum;
 
                 VectorClear(out);
@@ -1232,16 +1341,18 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
                 weight = (skelWeight_t *)((byte *)newVerts + sizeof(skeletorVertex_t)
                                           + sizeof(skeletorMorph_t) * newVerts->numMorphs);
 
-                channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                boneNum    = ri.TIKI_GetLocalChannel(tiki, channelNum);
-                bone       = &bones[boneNum];
+                boneIdx = weight->boneIndex;
+                boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                     : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
+                bone    = &bones[boneNum];
 
                 SkelVertGetNormal(newVerts, bone, normal);
 
                 for (weightNum = 0; weightNum < newVerts->numWeights; weightNum++) {
-                    channelNum = skelmodel->pBones[weight->boneIndex].channel;
-                    boneNum    = ri.TIKI_GetLocalChannel(tiki, channelNum);
-                    bone       = &bones[boneNum];
+                    boneIdx = weight->boneIndex;
+                    boneNum = (boneIdx < numMappedBones) ? localChannels[boneIdx]
+                                                         : ri.TIKI_GetLocalChannel(tiki, skelmodel->pBones[boneIdx].channel);
+                    bone    = &bones[boneNum];
 
                     SkelWeightGetXyz(weight, bone, out);
 
@@ -1339,19 +1450,12 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
 		}
 	} //else
 #endif
-    //{
-    //	// an attemp to fix bizarre vertex colors bug
-    //	color4ub_t *col;
-    //
-    //	col = &tess.vertexColors[baseVertex];
-    //	for(i = 0; i < sf->numVerts; i++,col++) {
-    //		(*col)[0] = 255;
-    //		(*col)[1] = 255;
-    //		(*col)[2] = 255;
-    //		(*col)[3] = 255;
-    //	}
-    //}
-    //tess.numVertexes += sf->numVerts;
+    for (i = 0; i < render_count; i++) {
+        tess.color[baseVertex + i][0] = 0xffff;
+        tess.color[baseVertex + i][1] = 0xffff;
+        tess.color[baseVertex + i][2] = 0xffff;
+        tess.color[baseVertex + i][3] = 0xffff;
+    }
 }
 
 /*
@@ -1389,6 +1493,114 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
     meshNum   = staticSurf->meshNum;
     skelmodel = ri.TIKI_GetSkel(tiki->mesh[meshNum]);
 
+    // Fast GPU Static VAO path: draws directly from GL_STATIC_DRAW VRAM via BaseVertex
+    // with 3 pre-baked LOD index slices (zero CPU vertex copies, zero normal packing, zero ring traffic).
+    if (tr.staticModelVao && qglDrawElementsBaseVertex
+        && backEnd.currentStaticModel->staticVaoBaseVertex >= 0
+        && !lod_tool->integer && !r_showstaticlod->integer
+        && !ShaderRequiresCPUDeforms(tess.shader))
+    {
+        qboolean isPiSunShadow = !!(backEnd.depthFill && (backEnd.viewParms.flags & VPF_PISUNSHADOW));
+        qboolean shadowAlphaNeedsCpu = qfalse;
+        if (isPiSunShadow) {
+            shaderStage_t *st0 = tess.xstages[0];
+            if (st0 && (st0->stateBits & GLS_ATEST_BITS) && tess.shader->needsStaticCpuColors) {
+                shadowAlphaNeedsCpu = qtrue;
+            }
+        }
+
+        if ((isPiSunShadow && !shadowAlphaNeedsCpu)
+            || (!isPiSunShadow && !tess.shader->needsStaticCpuColors && !backEnd.currentStaticModel->useSpecialLighting))
+        {
+            const staticModelSurfIbo_t *ibo = R_FindStaticModelSurfIbo(surf);
+            if (ibo) {
+                int lod = 0;
+
+                if (isPiSunShadow) {
+                    vec3_t delta;
+                    float  distSq;
+                    VectorSubtract(backEnd.currentStaticModel->origin, backEnd.refdef.vieworg, delta);
+                    distSq = VectorLengthSquared(delta);
+                    if (r_dynamicSunShadows && r_dynamicSunShadows->integer >= 2) {
+                        if (distSq > (550.0f * 550.0f) && ibo->numIndexes[2] > 0) {
+                            lod = 2;
+                        } else if (distSq > (260.0f * 260.0f) && ibo->numIndexes[1] > 0) {
+                            lod = 1;
+                        }
+                    } else {
+                        if (distSq > (380.0f * 380.0f) && ibo->numIndexes[2] > 0) {
+                            lod = 2;
+                        } else if (ibo->numIndexes[1] > 0) {
+                            lod = 1;
+                        }
+                    }
+                } else if (skelmodel->pLOD && r_staticlod->integer && surf->numVerts > 3 && ibo->numIndexes[1] > 0) {
+                    skelIndex_t *collapseIndex = surf->pCollapseIndex;
+                    int          lod_cutoff = GetLodCutoff(skelmodel, backEnd.currentStaticModel->lodpercentage[0], 0);
+                    int          low, mid, high;
+
+                    if (collapseIndex[2] < lod_cutoff) {
+                        return;
+                    }
+                    low = mid = 3;
+                    high = surf->numVerts;
+                    while (high >= low) {
+                        mid = (low + high) >> 1;
+                        if (collapseIndex[mid] < lod_cutoff) {
+                            high = mid - 1;
+                            if (collapseIndex[mid - 1] >= lod_cutoff) {
+                                break;
+                            }
+                        } else {
+                            mid++;
+                            low = mid;
+                            if (high == mid || collapseIndex[mid] < lod_cutoff) {
+                                break;
+                            }
+                        }
+                    }
+                    if (mid <= 0) {
+                        return;
+                    }
+                    if (mid >= ibo->minVerts[0]) {
+                        lod = 0;
+                    } else if (ibo->numIndexes[2] > 0 && mid < ibo->minVerts[1]) {
+                        lod = 2;
+                    } else {
+                        lod = 1;
+                    }
+                }
+
+                if (ibo->numIndexes[lod] <= 0) {
+                    return;
+                }
+
+                if (tess.numIndexes) {
+                    shader_t *sh = tess.shader;
+                    int       fog = tess.fogNum;
+                    int       cm = tess.cubemapIndex;
+                    RB_EndSurface();
+                    RB_BeginSurface(sh, fog, cm);
+                }
+
+                RB_CheckVao(tr.staticModelVao);
+                tess.useInternalVao = qfalse;
+                tess.baseVertex     = backEnd.currentStaticModel->staticVaoBaseVertex + staticSurf->ofsStaticData;
+                tess.firstIndex     = ibo->firstIndex[lod];
+                tess.numIndexes     = ibo->numIndexes[lod];
+                tess.numVertexes    = surf->numVerts;
+
+                if (g_bInfoworldtris) {
+                    ptrdiff_t smIndex = backEnd.currentStaticModel - backEnd.refdef.staticModels;
+                    if (smIndex >= 0 && smIndex < (ptrdiff_t)ARRAY_LEN(staticModelNumIndexes)) {
+                        staticModelNumIndexes[smIndex] += ibo->numIndexes[lod];
+                    }
+                }
+                return;
+            }
+        }
+    }
+
     //
     // Process LOD
     //
@@ -1396,6 +1608,9 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
         float lod_val;
 
         lod_val = backEnd.currentStaticModel->lodpercentage[0];
+        if (backEnd.viewParms.flags & VPF_PISUNSHADOW) {
+            lod_val *= (r_dynamicSunShadows && r_dynamicSunShadows->integer >= 2) ? 0.55f : 0.35f;
+        }
 
         if (surf->numVerts > 3) {
             skelIndex_t *collapseIndex;
@@ -1444,8 +1659,13 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
         render_count = surf->numVerts;
     }
 
+    if (surf->numVerts > (int)ARRAY_LEN(collapse)) {
+        render_count = surf->numVerts;
+    }
+
     indexes = surf->numTriangles * 3;
-    RB_CHECKOVERFLOW(render_count, surf->numTriangles);
+    RB_CheckVao(tess.vao);
+    RB_CHECKOVERFLOW(render_count, indexes);
 
     collapse_map = surf->pCollapse;
     triangles    = surf->pTriangles;
@@ -1453,12 +1673,16 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
     baseVertex   = tess.numVertexes;
     tess.numVertexes += render_count;
 
+    ptrdiff_t smIndex = backEnd.currentStaticModel - backEnd.refdef.staticModels;
+
     if (render_count == surf->numVerts) {
         for (j = 0; j < indexes; j++) {
             tess.indexes[baseIndex + j] = baseVertex + triangles[j];
         }
 
-        staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += indexes;
+        if (smIndex >= 0 && smIndex < (ptrdiff_t)ARRAY_LEN(staticModelNumIndexes)) {
+            staticModelNumIndexes[smIndex] += indexes;
+        }
         tess.numIndexes += indexes;
     } else {
         for (i = 0; i < render_count; i++) {
@@ -1480,39 +1704,55 @@ void RB_StaticMesh(staticSurface_t *staticSurf)
             tess.indexes[baseIndex + j + 2] = baseVertex + collapse[triangles[j + 2]];
         }
 
-        staticModelNumIndexes[backEnd.currentStaticModel - backEnd.refdef.staticModels] += j;
+        if (smIndex >= 0 && smIndex < (ptrdiff_t)ARRAY_LEN(staticModelNumIndexes)) {
+            staticModelNumIndexes[smIndex] += j;
+        }
         tess.numIndexes += j;
     }
 
-    for (j = 0; j < render_count; j++) {
-        Vector4Copy(surf->pStaticXyz[j], tess.xyz[baseVertex + j]);
-        Vector4Copy(surf->pStaticNormal[j], tess.normal[baseVertex + j]);
-        tess.texCoords[baseVertex + j][0]   = surf->pStaticTexCoords[j][0][0];
-        tess.texCoords[baseVertex + j][1]   = surf->pStaticTexCoords[j][0][1];
-        tess.lightCoords[baseVertex + j][0] = surf->pStaticTexCoords[j][1][0];
-        tess.lightCoords[baseVertex + j][1] = surf->pStaticTexCoords[j][1][1];
-    }
+    {
+        const unsigned int attribs = tess.shader->vertexAttribs;
 
-    if (backEndData->staticModelData) {
-        const size_t offset =
-            backEnd.currentStaticModel->firstVertexData + staticSurf->ofsStaticData * sizeof(color4ub_t);
-        assert(offset < tr.world->numStaticModelData * sizeof(color4ub_t));
-        assert(offset + render_count * sizeof(color4ub_t) <= tr.world->numStaticModelData * sizeof(color4ub_t));
+        Com_Memcpy(tess.xyz[baseVertex], surf->pStaticXyz, (size_t)render_count * sizeof(vec4_t));
 
-        const color4ub_t *in = (const color4ub_t *)&backEndData->staticModelData[offset];
-
-        for (i = 0; i < render_count; i++) {
-            tess.color[baseVertex + i][0] = in[i][0] * 0xffff / 0xff;
-            tess.color[baseVertex + i][1] = in[i][1] * 0xffff / 0xff;
-            tess.color[baseVertex + i][2] = in[i][2] * 0xffff / 0xff;
-            tess.color[baseVertex + i][3] = in[i][3] * 0xffff / 0xff;
+        if (attribs & ATTR_TEXCOORD) {
+            for (j = 0; j < render_count; j++) {
+                tess.texCoords[baseVertex + j][0] = surf->pStaticTexCoords[j][0][0];
+                tess.texCoords[baseVertex + j][1] = surf->pStaticTexCoords[j][0][1];
+            }
         }
-    } else {
-        for (i = 0; i < render_count; i++) {
-            tess.color[baseVertex + i][0] = 0xffff;
-            tess.color[baseVertex + i][1] = 0xffff;
-            tess.color[baseVertex + i][2] = 0xffff;
-            tess.color[baseVertex + i][3] = 0xffff;
+
+        if (attribs & ATTR_LIGHTCOORD) {
+            for (j = 0; j < render_count; j++) {
+                tess.lightCoords[baseVertex + j][0] = surf->pStaticTexCoords[j][1][0];
+                tess.lightCoords[baseVertex + j][1] = surf->pStaticTexCoords[j][1][1];
+            }
+        }
+
+        if (attribs & ATTR_NORMAL) {
+            for (j = 0; j < render_count; j++) {
+                R_VaoPackNormal(tess.normal[baseVertex + j], surf->pStaticNormal[j]);
+            }
+        }
+
+        if (attribs & ATTR_COLOR) {
+            if (backEndData->staticModelData) {
+                const size_t offset =
+                    backEnd.currentStaticModel->firstVertexData + staticSurf->ofsStaticData * sizeof(color4ub_t);
+                assert(offset < tr.world->numStaticModelData * sizeof(color4ub_t));
+                assert(offset + render_count * sizeof(color4ub_t) <= tr.world->numStaticModelData * sizeof(color4ub_t));
+
+                const color4ub_t *in = (const color4ub_t *)&backEndData->staticModelData[offset];
+
+                for (i = 0; i < render_count; i++) {
+                    tess.color[baseVertex + i][0] = (uint16_t)(in[i][0] * 257u);
+                    tess.color[baseVertex + i][1] = (uint16_t)(in[i][1] * 257u);
+                    tess.color[baseVertex + i][2] = (uint16_t)(in[i][2] * 257u);
+                    tess.color[baseVertex + i][3] = (uint16_t)(in[i][3] * 257u);
+                }
+            } else {
+                Com_Memset(tess.color[baseVertex], 0xff, (size_t)render_count * sizeof(tess.color[0]));
+            }
         }
     }
 }
@@ -1567,7 +1807,7 @@ void R_PrintInfoWorldtris(void)
 
     totalNumTris = 0;
 
-    for (i = 0; i < ARRAY_LEN(entityNumIndexes); i++) {
+    for (i = 0; i < ARRAY_LEN(staticModelNumIndexes); i++) {
         numTris = staticModelNumIndexes[i] / 3;
         if (!numTris) {
             continue;
@@ -1720,31 +1960,24 @@ float R_CalcLod(const vec3_t origin, float radius)
 R_CullTIKI
 =============
 */
-static int R_CullSkelModel(dtiki_t *tiki, refEntity_t *e, skelAnimFrame_t *newFrame, float fScale, float *vLocalOrg)
+static int R_CullSkelModel(dtiki_t *tiki, refEntity_t *e, const vec3_t frameMin, const vec3_t frameMax, float fScale, float *vLocalOrg)
 {
     vec3_t bounds[2];
     vec3_t delta;
+    float  lerpPad = 0.0f;
     int    i;
     int    cull;
 
-    // FIXME: not working properly
-    return CULL_IN;
-
-    if (tr.currentEntity->e.renderfx & RF_FRAMELERP) {
+    if (e->renderfx & RF_FRAMELERP) {
         VectorSubtract(e->origin, e->oldorigin, delta);
-    } else {
-        VectorClear(delta);
+        lerpPad = VectorLength(delta);
     }
 
     for (i = 0; i < 3; i++) {
-        bounds[0][i] = newFrame->bounds[0][i] * fScale + vLocalOrg[i];
-        bounds[1][i] = newFrame->bounds[1][i] * fScale + vLocalOrg[i];
-
-        if (delta[i] > 0) {
-            bounds[1][i] += delta[i];
-        } else {
-            bounds[0][i] += delta[i];
-        }
+        float minB   = Q_min(frameMin[i], tiki->a->mins[i]);
+        float maxB   = Q_max(frameMax[i], tiki->a->maxs[i]);
+        bounds[0][i] = minB * fScale + vLocalOrg[i] - lerpPad;
+        bounds[1][i] = maxB * fScale + vLocalOrg[i] + lerpPad;
     }
 
     cull = R_CullLocalBox(bounds);

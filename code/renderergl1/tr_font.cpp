@@ -738,7 +738,9 @@ void R_DrawString(fontheader_t* font, const char* text, float x, float y, int ma
 
         if (uch == '\n' || uch == '\r') {
             buffer[buflen] = 0;
-            R_DrawString_sgl(font->sgl[cursgl], buffer, curX, curY, maxlen, pvVirtualScreen);
+            if (cursgl >= 0 && buflen > 0) {
+                R_DrawString_sgl(font->sgl[cursgl], buffer, curX, curY, maxlen, pvVirtualScreen);
+            }
             
             curX = x;
             curHeight = 0.f;

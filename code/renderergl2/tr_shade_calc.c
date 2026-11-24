@@ -400,7 +400,7 @@ static void AutospriteDeform( void ) {
 		}
 
 	  // compensate for scale in the axes if necessary
-  	if ( backEnd.currentStaticModel || backEnd.currentEntity->e.nonNormalizedAxes ) {
+  	if ( backEnd.currentStaticModel || ( backEnd.currentEntity && backEnd.currentEntity->e.nonNormalizedAxes ) ) {
       float axisLength;
 
           // OPENMOHAA-specific stuff
@@ -435,17 +435,17 @@ Autosprite2Deform
 Autosprite2 will pivot a rectangular quad along the center of its long axis
 =====================
 */
-int edgeVerts[6][2] = {
+glIndex_t edgeVerts[6][2] = {
 	{ 0, 1 },
-	{ 0, 2 },
 	{ 0, 3 },
-	{ 1, 2 },
+	{ 0, 2 },
 	{ 1, 3 },
-	{ 2, 3 }
+	{ 1, 2 },
+	{ 3, 2 }
 };
 
 static void Autosprite2Deform( void ) {
-	int		i, j, k;
+	int		i, j;
 	int		indexes;
 	float	*xyz;
 	vec3_t	forward;
@@ -457,28 +457,29 @@ static void Autosprite2Deform( void ) {
 		ri.Printf( PRINT_WARNING, "Autosprite2 shader %s had odd index count\n", tess.shader->name );
 	}
 
-	if ( backEnd.currentEntity != &tr.worldEntity ) {
+	if ( backEnd.currentStaticModel || backEnd.currentEntity != &tr.worldEntity ) {
 		GlobalVectorToLocal( backEnd.viewParms.ori.axis[0], forward );
 	} else {
 		VectorCopy( backEnd.viewParms.ori.axis[0], forward );
 	}
 
-	// this is a lot of work for two triangles...
-	// we could precalculate a lot of it is an issue, but it would mess up
-	// the shader abstraction
 	for ( i = 0, indexes = 0 ; i < tess.numVertexes ; i+=4, indexes+=6 ) {
-		float	lengths[2];
-		int		nums[2];
+		float shortLengths[2];
+		int shortNums[2];
+		float longLengths[2];
+		int longNums[2];
 		vec3_t	mid[2];
 		vec3_t	major, minor;
-		float	*v1, *v2;
+		float	*v1, *v2, *v3, *v4;
+		qboolean firstOnLeft, secondOnLeft;
+		float edgeLength;
 
-		// find the midpoint
 		xyz = tess.xyz[i];
 
-		// identify the two shortest edges
-		nums[0] = nums[1] = 0;
-		lengths[0] = lengths[1] = 999999;
+		shortNums[0] = shortNums[1] = 0;
+		shortLengths[0] = shortLengths[1] = 1000000000.0f;
+		longNums[1] = longNums[0] = 0;
+		longLengths[1] = longLengths[0] = 0.0f;
 
 		for ( j = 0 ; j < 6 ; j++ ) {
 			float	l;
@@ -488,22 +489,32 @@ static void Autosprite2Deform( void ) {
 			v2 = xyz + 4 * edgeVerts[j][1];
 
 			VectorSubtract( v1, v2, temp );
-			
 			l = DotProduct( temp, temp );
-			if ( l < lengths[0] ) {
-				nums[1] = nums[0];
-				lengths[1] = lengths[0];
-				nums[0] = j;
-				lengths[0] = l;
-			} else if ( l < lengths[1] ) {
-				nums[1] = j;
-				lengths[1] = l;
+
+			if ( l < shortLengths[0] ) {
+				shortNums[1] = shortNums[0];
+				shortLengths[1] = shortLengths[0];
+				shortNums[0] = j;
+				shortLengths[0] = l;
+			} else if ( l < shortLengths[1] ) {
+				shortNums[1] = j;
+				shortLengths[1] = l;
+			}
+
+			if ( l > longLengths[0] ) {
+				longNums[1] = longNums[0];
+				longLengths[1] = longLengths[0];
+				longNums[0] = j;
+				longLengths[0] = l;
+			} else if ( l > longLengths[1] ) {
+				longNums[1] = j;
+				longLengths[1] = l;
 			}
 		}
 
 		for ( j = 0 ; j < 2 ; j++ ) {
-			v1 = xyz + 4 * edgeVerts[nums[j]][0];
-			v2 = xyz + 4 * edgeVerts[nums[j]][1];
+			v1 = xyz + 4 * edgeVerts[shortNums[j]][0];
+			v2 = xyz + 4 * edgeVerts[shortNums[j]][1];
 
 			mid[j][0] = 0.5f * (v1[0] + v2[0]);
 			mid[j][1] = 0.5f * (v1[1] + v2[1]);
@@ -516,32 +527,189 @@ static void Autosprite2Deform( void ) {
 		// cross this with the view direction to get minor axis
 		CrossProduct( major, forward, minor );
 		VectorNormalize( minor );
-		
-		// re-project the points
-		for ( j = 0 ; j < 2 ; j++ ) {
-			float	l;
 
-			v1 = xyz + 4 * edgeVerts[nums[j]][0];
-			v2 = xyz + 4 * edgeVerts[nums[j]][1];
+		v1 = xyz + 4 * edgeVerts[shortNums[0]][0];
+		v2 = xyz + 4 * edgeVerts[shortNums[0]][1];
 
-			l = 0.5 * sqrt( lengths[j] );
-			
-			// we need to see which direction this edge
-			// is used to determine direction of projection
-			for ( k = 0 ; k < 5 ; k++ ) {
-				if ( tess.indexes[ indexes + k ] == i + edgeVerts[nums[j]][0]
-					&& tess.indexes[ indexes + k + 1 ] == i + edgeVerts[nums[j]][1] ) {
-					break;
-				}
-			}
+		if (edgeVerts[shortNums[0]][0] == edgeVerts[longNums[0]][0]
+			|| edgeVerts[shortNums[0]][0] == edgeVerts[longNums[0]][1]) {
+			firstOnLeft = qtrue;
+		} else {
+			firstOnLeft = qfalse;
+		}
 
-			if ( k == 5 ) {
-				VectorMA( mid[j], l, minor, v1 );
-				VectorMA( mid[j], -l, minor, v2 );
+		if (edgeVerts[shortNums[1]][0] == edgeVerts[longNums[1]][0]
+			|| edgeVerts[shortNums[1]][0] == edgeVerts[longNums[1]][1]) {
+			secondOnLeft = qtrue;
+		} else {
+			secondOnLeft = qfalse;
+		}
+
+		if (firstOnLeft == secondOnLeft) {
+			v3 = xyz + 4 * edgeVerts[shortNums[1]][0];
+			v4 = xyz + 4 * edgeVerts[shortNums[1]][1];
+		} else {
+			v3 = xyz + 4 * edgeVerts[shortNums[1]][1];
+			v4 = xyz + 4 * edgeVerts[shortNums[1]][0];
+		}
+
+		edgeLength = sqrtf(shortLengths[0]) * 0.5f;
+		v1[0] = -edgeLength * minor[0] + mid[0][0];
+		v1[1] = -edgeLength * minor[1] + mid[0][1];
+		v1[2] = -edgeLength * minor[2] + mid[0][2];
+		v2[0] =  edgeLength * minor[0] + mid[0][0];
+		v2[1] =  edgeLength * minor[1] + mid[0][1];
+		v2[2] =  edgeLength * minor[2] + mid[0][2];
+
+		edgeLength = sqrtf(shortLengths[1]) * 0.5f;
+		v3[0] = -edgeLength * minor[0] + mid[1][0];
+		v3[1] = -edgeLength * minor[1] + mid[1][1];
+		v3[2] = -edgeLength * minor[2] + mid[1][2];
+		v4[0] =  edgeLength * minor[0] + mid[1][0];
+		v4[1] =  edgeLength * minor[1] + mid[1][1];
+		v4[2] =  edgeLength * minor[2] + mid[1][2];
+	}
+}
+
+static void LightGlowDeform( void ) {
+	int i;
+	int oldVerts;
+	float *xyz;
+	vec3_t mid, delta;
+	float radius, dist, ofs;
+	vec3_t forward, left, up;
+	vec3_t leftDir, upDir;
+
+	if ( tess.numVertexes & 3 ) {
+		ri.Printf( PRINT_WARNING, "LightGlowDeform shader %s had odd vertex count\n", tess.shader->name );
+	}
+	if ( tess.numIndexes != ( tess.numVertexes >> 2 ) * 6 ) {
+		ri.Printf( PRINT_WARNING, "LightGlowDeform shader %s had odd index count\n", tess.shader->name );
+	}
+
+	oldVerts = tess.numVertexes;
+	tess.numVertexes = 0;
+	tess.numIndexes = 0;
+	tess.firstIndex = 0;
+
+	if ( backEnd.currentEntity == &tr.worldEntity && !backEnd.currentStaticModel ) {
+		VectorCopy( backEnd.viewParms.ori.axis[1], leftDir );
+		VectorCopy( backEnd.viewParms.ori.axis[2], upDir );
+	} else {
+		GlobalVectorToLocal( backEnd.viewParms.ori.axis[1], leftDir );
+		GlobalVectorToLocal( backEnd.viewParms.ori.axis[2], upDir );
+	}
+
+	for ( i = 0; i < oldVerts; i += 4 ) {
+		vec4_t color;
+		xyz = tess.xyz[i];
+
+		mid[0] = (xyz[0] + xyz[4] + xyz[8] + xyz[12]) * 0.25f;
+		mid[1] = (xyz[1] + xyz[5] + xyz[9] + xyz[13]) * 0.25f;
+		mid[2] = (xyz[2] + xyz[6] + xyz[10] + xyz[14]) * 0.25f;
+
+		VectorSubtract( xyz, mid, delta );
+		radius = VectorLength( delta ) * 0.707f;
+
+		VectorAdd( mid, backEnd.ori.origin, delta );
+		VectorSubtract( backEnd.viewParms.ori.origin, delta, forward );
+		dist = VectorNormalize( forward ) - 4.0f;
+
+		VectorScale( forward, radius, forward );
+		VectorScale( leftDir, radius, left );
+		VectorScale( upDir, radius, up );
+
+		if ( backEnd.viewParms.isMirror ) {
+			VectorSubtract( vec3_origin, forward, forward );
+			VectorSubtract( vec3_origin, left, left );
+		}
+
+		if ( backEnd.currentStaticModel || (backEnd.currentEntity && backEnd.currentEntity->e.nonNormalizedAxes) ) {
+			float axisLength;
+			if ( backEnd.currentStaticModel ) {
+				axisLength = VectorLength( backEnd.currentStaticModel->axis[0] );
 			} else {
-				VectorMA( mid[j], -l, minor, v1 );
-				VectorMA( mid[j], l, minor, v2 );
+				axisLength = VectorLength( backEnd.currentEntity->e.axis[0] );
 			}
+			if ( axisLength != 0.0f ) {
+				axisLength = 1.0f / axisLength;
+				VectorScale( forward, axisLength, forward );
+				VectorScale( left, axisLength, left );
+				VectorScale( up, axisLength, up );
+			} else {
+				VectorClear( forward );
+				VectorClear( left );
+				VectorClear( up );
+			}
+		}
+
+		ofs = VectorLength( forward );
+		if ( ofs > dist && dist > 0.0f ) {
+			VectorNormalizeFast( forward );
+			VectorScale( forward, dist, forward );
+		}
+
+		VectorAdd( mid, forward, mid );
+		VectorScale4( tess.color[i], 1.0f / 65535.0f, color );
+		RB_AddQuadStamp( mid, left, up, color );
+	}
+}
+
+static void RB_CalcFlapVertexes( deformStage_t *ds, int coordIdx ) {
+	int i;
+	float scale, vertexScale;
+	float base, amplitude, phase, frequency;
+	float minVal = ds->bulgeWidth;
+	float maxVal = ds->bulgeHeight;
+
+	if ( ds->deformationWave.base != 1234567.0f ) {
+		base = ds->deformationWave.base;
+	} else if ( backEnd.currentEntity ) {
+		base = (float)backEnd.currentEntity->e.surfaces[0] / 16.0f - 8.0f;
+	} else {
+		base = 0.0f;
+	}
+
+	if ( ds->deformationWave.amplitude != 1234567.0f ) {
+		amplitude = ds->deformationWave.amplitude;
+	} else if ( backEnd.currentEntity ) {
+		amplitude = (float)backEnd.currentEntity->e.surfaces[1] / 16.0f;
+	} else {
+		amplitude = 0.0f;
+	}
+
+	if ( ds->deformationWave.phase != 1234567.0f ) {
+		phase = ds->deformationWave.phase;
+	} else if ( backEnd.currentEntity ) {
+		phase = (float)backEnd.currentEntity->e.surfaces[2] / 16.0f - 8.0f;
+	} else {
+		phase = 0.0f;
+	}
+
+	if ( ds->deformationWave.frequency != 1234567.0f ) {
+		frequency = ds->deformationWave.frequency;
+	} else if ( backEnd.currentEntity ) {
+		frequency = (float)backEnd.currentEntity->e.surfaces[3] / 16.0f;
+	} else {
+		frequency = 0.0f;
+	}
+
+	if ( frequency != 0.0f ) {
+		float *table = TableForFunc( ds->deformationWave.func );
+		scale = WAVEVALUE( table, base, amplitude, phase, frequency );
+		for ( i = 0; i < tess.numVertexes; i++ ) {
+			vec3_t norm;
+			vertexScale = (maxVal - minVal) * tess.texCoords[i][coordIdx] + minVal;
+			R_VaoUnpackNormal( norm, tess.normal[i] );
+			VectorMA( tess.xyz[i], scale * vertexScale, norm, tess.xyz[i] );
+		}
+	} else {
+		scale = EvalWaveForm( &ds->deformationWave );
+		for ( i = 0; i < tess.numVertexes; i++ ) {
+			vec3_t norm;
+			vertexScale = (maxVal - minVal) * tess.texCoords[i][coordIdx] + minVal;
+			R_VaoUnpackNormal( norm, tess.normal[i] );
+			VectorMA( tess.xyz[i], scale * vertexScale, norm, tess.xyz[i] );
 		}
 	}
 }
@@ -589,6 +757,15 @@ void RB_DeformTessGeometry( void ) {
 			break;
 		case DEFORM_AUTOSPRITE2:
 			Autosprite2Deform();
+			break;
+		case DEFORM_LIGHTGLOW:
+			LightGlowDeform();
+			break;
+		case DEFORM_FLAP_S:
+			RB_CalcFlapVertexes( ds, 0 );
+			break;
+		case DEFORM_FLAP_T:
+			RB_CalcFlapVertexes( ds, 1 );
 			break;
 		case DEFORM_TEXT0:
 		case DEFORM_TEXT1:
@@ -784,10 +961,27 @@ void RB_CalcScaleTexMatrix( const float scale[2], float *matrix )
 void RB_CalcScrollTexMatrix( const float scrollSpeed[2], float *matrix )
 {
 	double timeScale = tess.shaderTime;
+	double speedS, speedT;
 	double adjustedScrollS, adjustedScrollT;
 
-	adjustedScrollS = scrollSpeed[0] * timeScale;
-	adjustedScrollT = scrollSpeed[1] * timeScale;
+	if ( scrollSpeed[0] != 1234567.0f ) {
+		speedS = scrollSpeed[0];
+	} else if ( backEnd.currentEntity ) {
+		speedS = backEnd.currentEntity->e.shader_data[0];
+	} else {
+		speedS = 0.0;
+	}
+
+	if ( scrollSpeed[1] != 1234567.0f ) {
+		speedT = scrollSpeed[1];
+	} else if ( backEnd.currentEntity ) {
+		speedT = backEnd.currentEntity->e.shader_data[1];
+	} else {
+		speedT = 0.0;
+	}
+
+	adjustedScrollS = speedS * timeScale;
+	adjustedScrollT = speedT * timeScale;
 
 	// clamp so coordinates don't continuously get larger, causing problems
 	// with hardware limits
@@ -796,6 +990,57 @@ void RB_CalcScrollTexMatrix( const float scrollSpeed[2], float *matrix )
 
 	matrix[0] = 1.0f; matrix[2] = 0.0f; matrix[4] = adjustedScrollS;
 	matrix[1] = 0.0f; matrix[3] = 1.0f; matrix[5] = adjustedScrollT;
+}
+
+/*
+** RB_CalcOffsetTexMatrix
+*/
+void RB_CalcOffsetTexMatrix( const float offset[2], float *matrix )
+{
+	float offsetS, offsetT;
+
+	if ( offset[0] != 1234567.0f ) {
+		offsetS = offset[0];
+	} else if ( backEnd.currentEntity ) {
+		offsetS = backEnd.currentEntity->e.shader_data[0];
+	} else {
+		offsetS = 0.0f;
+	}
+
+	if ( offset[1] != 1234567.0f ) {
+		offsetT = offset[1];
+	} else if ( backEnd.currentEntity ) {
+		offsetT = backEnd.currentEntity->e.shader_data[1];
+	} else {
+		offsetT = 0.0f;
+	}
+
+	matrix[0] = 1.0f; matrix[2] = 0.0f; matrix[4] = offsetS;
+	matrix[1] = 0.0f; matrix[3] = 1.0f; matrix[5] = offsetT;
+}
+
+/*
+** RB_CalcParallaxTexMatrix
+*/
+void RB_CalcParallaxTexMatrix( const float rate[2], float *matrix )
+{
+	matrix[0] = 1.0f; matrix[2] = 0.0f; matrix[4] = tr.refdef.vieworg[0] * rate[0];
+	matrix[1] = 0.0f; matrix[3] = 1.0f; matrix[5] = tr.refdef.vieworg[1] * rate[1];
+}
+
+/*
+** RB_CalcTransWaveTexMatrix / RB_CalcTransWaveTTexMatrix
+*/
+void RB_CalcTransWaveTexMatrix( const waveForm_t *wf, float *matrix )
+{
+	matrix[0] = 1.0f; matrix[2] = 0.0f; matrix[4] = EvalWaveForm( wf );
+	matrix[1] = 0.0f; matrix[3] = 1.0f; matrix[5] = 0.0f;
+}
+
+void RB_CalcTransWaveTTexMatrix( const waveForm_t *wf, float *matrix )
+{
+	matrix[0] = 1.0f; matrix[2] = 0.0f; matrix[4] = 0.0f;
+	matrix[1] = 0.0f; matrix[3] = 1.0f; matrix[5] = EvalWaveForm( wf );
 }
 
 /*
@@ -810,14 +1055,23 @@ void RB_CalcTransformTexMatrix( const texModInfo_t *tmi, float *matrix  )
 /*
 ** RB_CalcRotateTexMatrix
 */
-void RB_CalcRotateTexMatrix( float degsPerSecond, float *matrix )
+void RB_CalcRotateTexMatrixEx( float degsPerSecond, float rotateCoef, float rotateStart, float *matrix )
 {
 	double timeScale = tess.shaderTime;
 	double degs;
 	int64_t index;
 	float sinValue, cosValue;
+	float speed = degsPerSecond;
+	float start = rotateStart;
 
-	degs = -degsPerSecond * timeScale;
+	if ( speed == 1234567.0f ) {
+		speed = backEnd.currentEntity ? backEnd.currentEntity->e.shader_data[0] : 0.0f;
+	}
+	if ( start == 1234567.0f ) {
+		start = backEnd.currentEntity ? backEnd.currentEntity->e.shader_data[1] : 0.0f;
+	}
+
+	degs = -(speed * timeScale * rotateCoef + start);
 	index = degs * ( FUNCTABLE_SIZE / 360.0f );
 
 	sinValue = tr.sinTable[ index & FUNCTABLE_MASK ];
@@ -825,6 +1079,11 @@ void RB_CalcRotateTexMatrix( float degsPerSecond, float *matrix )
 
 	matrix[0] = cosValue; matrix[2] = -sinValue; matrix[4] = 0.5 - 0.5 * cosValue + 0.5 * sinValue;
 	matrix[1] = sinValue; matrix[3] = cosValue;  matrix[5] = 0.5 - 0.5 * sinValue - 0.5 * cosValue;
+}
+
+void RB_CalcRotateTexMatrix( float degsPerSecond, float *matrix )
+{
+	RB_CalcRotateTexMatrixEx( degsPerSecond, 1.0f, 0.0f, matrix );
 }
 
 //

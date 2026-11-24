@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_init.c -- functions that are not called every frame
 
 #include "tr_local.h"
+#include "../renderercommon/tr_threadpool.h"
 
 glconfig_t	glConfig;
 qboolean	textureFilterAnisotropic = qfalse;
@@ -1671,6 +1672,8 @@ void R_Init( void ) {
 
 	R_NoiseInit();
 
+	R_ThreadPoolInit();
+
 	R_Sky_Init();
 
 	R_Register();
@@ -1759,6 +1762,8 @@ void RE_Shutdown( qboolean destroyWindow ) {
 	R_ShutdownFont();
 
 	R_ShutdownTerrain();
+
+	R_ThreadPoolShutdown();
 
 	tr.registered = qfalse;
 }

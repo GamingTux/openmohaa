@@ -26,6 +26,14 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "../server/server.h"
 #include "snd_codec.h"
 
+#if defined(__has_include)
+#    if __has_include(<AL/efx.h>) && __has_include(<AL/efx-presets.h>)
+#        define HAVE_OPENAL_EFX 1
+#        include <AL/efx.h>
+#        include <AL/efx-presets.h>
+#    endif
+#endif
+
 typedef struct {
     const char *funcname;
     void      **funcptr;
@@ -135,6 +143,218 @@ static ALuint S_OPENAL_Format(float width, int channels);
 LPALGETSTRINGISOFT qalGetStringiSOFT;
 #endif
 
+#ifdef HAVE_OPENAL_EFX
+static LPALGENEFFECTS                   qalGenEffects;
+static LPALDELETEEFFECTS                qalDeleteEffects;
+static LPALISEFFECT                     qalIsEffect;
+static LPALEFFECTI                      qalEffecti;
+static LPALEFFECTF                      qalEffectf;
+static LPALEFFECTFV                     qalEffectfv;
+static LPALGENAUXILIARYEFFECTSLOTS      qalGenAuxiliaryEffectSlots;
+static LPALDELETEAUXILIARYEFFECTSLOTS   qalDeleteAuxiliaryEffectSlots;
+static LPALISAUXILIARYEFFECTSLOT        qalIsAuxiliaryEffectSlot;
+static LPALAUXILIARYEFFECTSLOTI         qalAuxiliaryEffectSloti;
+static LPALAUXILIARYEFFECTSLOTF         qalAuxiliaryEffectSlotf;
+
+static ALuint al_reverb_effect       = 0;
+static ALuint al_reverb_slot         = 0;
+static bool   al_efx_has_eaxreverb   = false;
+static int    al_active_reverb_type  = -1;
+static float  al_active_reverb_level = -1.0f;
+
+static const EFXEAXREVERBPROPERTIES s_efxReverbPresets[eax_totalnumber] = {
+    EFX_REVERB_PRESET_GENERIC,         // eax_generic
+    EFX_REVERB_PRESET_PADDEDCELL,      // eax_paddedcell
+    EFX_REVERB_PRESET_ROOM,            // eax_room
+    EFX_REVERB_PRESET_BATHROOM,        // eax_bathroom
+    EFX_REVERB_PRESET_LIVINGROOM,      // eax_livingroom
+    EFX_REVERB_PRESET_STONEROOM,       // eax_stoneroom
+    EFX_REVERB_PRESET_AUDITORIUM,      // eax_auditorium
+    EFX_REVERB_PRESET_CONCERTHALL,     // eax_concerthall
+    EFX_REVERB_PRESET_CAVE,            // eax_cave
+    EFX_REVERB_PRESET_ARENA,           // eax_arena
+    EFX_REVERB_PRESET_HANGAR,          // eax_hangar
+    EFX_REVERB_PRESET_CARPETEDHALLWAY, // eax_carpetedhallway
+    EFX_REVERB_PRESET_HALLWAY,         // eax_hallway
+    EFX_REVERB_PRESET_STONECORRIDOR,   // eax_stonecorridor
+    EFX_REVERB_PRESET_ALLEY,           // eax_alley
+    EFX_REVERB_PRESET_FOREST,          // eax_forest
+    EFX_REVERB_PRESET_CITY,            // eax_city
+    EFX_REVERB_PRESET_MOUNTAINS,       // eax_mountains
+    EFX_REVERB_PRESET_QUARRY,          // eax_quarry
+    EFX_REVERB_PRESET_PLAIN,           // eax_plain
+    EFX_REVERB_PRESET_PARKINGLOT,      // eax_parkinglot
+    EFX_REVERB_PRESET_SEWERPIPE,       // eax_sewerpipe
+    EFX_REVERB_PRESET_UNDERWATER,      // eax_underwater
+    EFX_REVERB_PRESET_DRUGGED,         // eax_drugged
+    EFX_REVERB_PRESET_DIZZY,           // eax_dizzy
+    EFX_REVERB_PRESET_PSYCHOTIC        // eax_psychotic
+};
+
+static bool S_OPENAL_InitEFX()
+{
+    al_reverb_effect       = 0;
+    al_reverb_slot         = 0;
+    al_efx_has_eaxreverb   = false;
+    al_active_reverb_type  = -1;
+    al_active_reverb_level = -1.0f;
+
+    if (!al_device || !qalcIsExtensionPresent(al_device, "ALC_EXT_EFX")) {
+        Com_Printf("OpenAL: ALC_EXT_EFX not supported by device.\n");
+        return false;
+    }
+
+    qalGenEffects                 = (LPALGENEFFECTS)qalGetProcAddress("alGenEffects");
+    qalDeleteEffects              = (LPALDELETEEFFECTS)qalGetProcAddress("alDeleteEffects");
+    qalIsEffect                   = (LPALISEFFECT)qalGetProcAddress("alIsEffect");
+    qalEffecti                    = (LPALEFFECTI)qalGetProcAddress("alEffecti");
+    qalEffectf                    = (LPALEFFECTF)qalGetProcAddress("alEffectf");
+    qalEffectfv                   = (LPALEFFECTFV)qalGetProcAddress("alEffectfv");
+    qalGenAuxiliaryEffectSlots    = (LPALGENAUXILIARYEFFECTSLOTS)qalGetProcAddress("alGenAuxiliaryEffectSlots");
+    qalDeleteAuxiliaryEffectSlots = (LPALDELETEAUXILIARYEFFECTSLOTS)qalGetProcAddress("alDeleteAuxiliaryEffectSlots");
+    qalIsAuxiliaryEffectSlot      = (LPALISAUXILIARYEFFECTSLOT)qalGetProcAddress("alIsAuxiliaryEffectSlot");
+    qalAuxiliaryEffectSloti       = (LPALAUXILIARYEFFECTSLOTI)qalGetProcAddress("alAuxiliaryEffectSloti");
+    qalAuxiliaryEffectSlotf       = (LPALAUXILIARYEFFECTSLOTF)qalGetProcAddress("alAuxiliaryEffectSlotf");
+
+    if (!qalGenEffects || !qalDeleteEffects || !qalIsEffect || !qalEffecti || !qalEffectf || !qalEffectfv
+        || !qalGenAuxiliaryEffectSlots || !qalDeleteAuxiliaryEffectSlots || !qalIsAuxiliaryEffectSlot
+        || !qalAuxiliaryEffectSloti || !qalAuxiliaryEffectSlotf) {
+        Com_Printf("OpenAL: Failed to load ALC_EXT_EFX entry points.\n");
+        return false;
+    }
+
+    qalGetError();
+    qalGenEffects(1, &al_reverb_effect);
+    if (qalGetError() != AL_NO_ERROR || !al_reverb_effect) {
+        Com_Printf("OpenAL: Failed to create EFX reverb effect.\n");
+        al_reverb_effect = 0;
+        return false;
+    }
+
+    qalEffecti(al_reverb_effect, AL_EFFECT_TYPE, AL_EFFECT_EAXREVERB);
+    if (qalGetError() == AL_NO_ERROR) {
+        al_efx_has_eaxreverb = true;
+    } else {
+        qalEffecti(al_reverb_effect, AL_EFFECT_TYPE, AL_EFFECT_REVERB);
+        if (qalGetError() != AL_NO_ERROR) {
+            Com_Printf("OpenAL: Neither EAXREVERB nor REVERB supported.\n");
+            qalDeleteEffects(1, &al_reverb_effect);
+            al_reverb_effect = 0;
+            return false;
+        }
+        al_efx_has_eaxreverb = false;
+    }
+
+    qalGenAuxiliaryEffectSlots(1, &al_reverb_slot);
+    if (qalGetError() != AL_NO_ERROR || !al_reverb_slot) {
+        Com_Printf("OpenAL: Failed to create EFX auxiliary effect slot.\n");
+        qalDeleteEffects(1, &al_reverb_effect);
+        al_reverb_effect = 0;
+        al_reverb_slot   = 0;
+        return false;
+    }
+
+    qalAuxiliaryEffectSlotf(al_reverb_slot, AL_EFFECTSLOT_GAIN, 0.0f);
+    qalAuxiliaryEffectSloti(al_reverb_slot, AL_EFFECTSLOT_EFFECT, (ALint)al_reverb_effect);
+    qalGetError();
+
+    Com_Printf(
+        "OpenAL: EFX 3D Reverb initialized (%s).\n",
+        al_efx_has_eaxreverb ? "AL_EFFECT_EAXREVERB" : "AL_EFFECT_REVERB"
+    );
+    return true;
+}
+
+static void S_OPENAL_ShutdownEFX()
+{
+    if (al_reverb_slot && qalAuxiliaryEffectSloti && qalDeleteAuxiliaryEffectSlots) {
+        qalAuxiliaryEffectSloti(al_reverb_slot, AL_EFFECTSLOT_EFFECT, AL_EFFECT_NULL);
+        qalDeleteAuxiliaryEffectSlots(1, &al_reverb_slot);
+        qalGetError();
+    }
+    if (al_reverb_effect && qalDeleteEffects) {
+        qalDeleteEffects(1, &al_reverb_effect);
+        qalGetError();
+    }
+    al_reverb_slot         = 0;
+    al_reverb_effect       = 0;
+    al_use_reverb          = false;
+    al_efx_has_eaxreverb   = false;
+    al_active_reverb_type  = -1;
+    al_active_reverb_level = -1.0f;
+}
+
+static void S_OPENAL_ApplyEFXPreset(int iType, float fLevel)
+{
+    if (!al_use_reverb || !al_reverb_effect || !al_reverb_slot) {
+        return;
+    }
+
+    if (iType < 0 || iType >= eax_totalnumber) {
+        iType = eax_generic;
+    }
+
+    float gain = (s_reverb && s_reverb->integer) ? Com_Clamp(0.0f, 1.0f, fLevel) : 0.0f;
+
+    if (iType != al_active_reverb_type) {
+        const EFXEAXREVERBPROPERTIES &p = s_efxReverbPresets[iType];
+
+        if (al_efx_has_eaxreverb) {
+            qalEffecti(al_reverb_effect, AL_EFFECT_TYPE, AL_EFFECT_EAXREVERB);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_DENSITY, p.flDensity);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_DIFFUSION, p.flDiffusion);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_GAIN, p.flGain);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_GAINHF, p.flGainHF);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_GAINLF, p.flGainLF);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_DECAY_TIME, p.flDecayTime);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_DECAY_HFRATIO, p.flDecayHFRatio);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_DECAY_LFRATIO, p.flDecayLFRatio);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_REFLECTIONS_GAIN, p.flReflectionsGain);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_REFLECTIONS_DELAY, p.flReflectionsDelay);
+            qalEffectfv(al_reverb_effect, AL_EAXREVERB_REFLECTIONS_PAN, p.flReflectionsPan);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_LATE_REVERB_GAIN, p.flLateReverbGain);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_LATE_REVERB_DELAY, p.flLateReverbDelay);
+            qalEffectfv(al_reverb_effect, AL_EAXREVERB_LATE_REVERB_PAN, p.flLateReverbPan);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_ECHO_TIME, p.flEchoTime);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_ECHO_DEPTH, p.flEchoDepth);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_MODULATION_TIME, p.flModulationTime);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_MODULATION_DEPTH, p.flModulationDepth);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_AIR_ABSORPTION_GAINHF, p.flAirAbsorptionGainHF);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_HFREFERENCE, p.flHFReference);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_LFREFERENCE, p.flLFReference);
+            qalEffectf(al_reverb_effect, AL_EAXREVERB_ROOM_ROLLOFF_FACTOR, p.flRoomRolloffFactor);
+            qalEffecti(al_reverb_effect, AL_EAXREVERB_DECAY_HFLIMIT, p.iDecayHFLimit);
+        } else {
+            qalEffecti(al_reverb_effect, AL_EFFECT_TYPE, AL_EFFECT_REVERB);
+            qalEffectf(al_reverb_effect, AL_REVERB_DENSITY, p.flDensity);
+            qalEffectf(al_reverb_effect, AL_REVERB_DIFFUSION, p.flDiffusion);
+            qalEffectf(al_reverb_effect, AL_REVERB_GAIN, p.flGain);
+            qalEffectf(al_reverb_effect, AL_REVERB_GAINHF, p.flGainHF);
+            qalEffectf(al_reverb_effect, AL_REVERB_DECAY_TIME, p.flDecayTime);
+            qalEffectf(al_reverb_effect, AL_REVERB_DECAY_HFRATIO, p.flDecayHFRatio);
+            qalEffectf(al_reverb_effect, AL_REVERB_REFLECTIONS_GAIN, p.flReflectionsGain);
+            qalEffectf(al_reverb_effect, AL_REVERB_REFLECTIONS_DELAY, p.flReflectionsDelay);
+            qalEffectf(al_reverb_effect, AL_REVERB_LATE_REVERB_GAIN, p.flLateReverbGain);
+            qalEffectf(al_reverb_effect, AL_REVERB_LATE_REVERB_DELAY, p.flLateReverbDelay);
+            qalEffectf(al_reverb_effect, AL_REVERB_AIR_ABSORPTION_GAINHF, p.flAirAbsorptionGainHF);
+            qalEffectf(al_reverb_effect, AL_REVERB_ROOM_ROLLOFF_FACTOR, p.flRoomRolloffFactor);
+            qalEffecti(al_reverb_effect, AL_REVERB_DECAY_HFLIMIT, p.iDecayHFLimit);
+        }
+
+        qalAuxiliaryEffectSloti(al_reverb_slot, AL_EFFECTSLOT_EFFECT, (ALint)al_reverb_effect);
+        qalGetError();
+        al_active_reverb_type = iType;
+    }
+
+    if (fabsf(gain - al_active_reverb_level) > 0.001f) {
+        // Scale wet send gently so gunshots & footsteps echo naturally without muddying dialogue
+        qalAuxiliaryEffectSlotf(al_reverb_slot, AL_EFFECTSLOT_GAIN, gain * 0.85f);
+        qalGetError();
+        al_active_reverb_level = gain;
+    }
+}
+#endif
+
 /*
 ==============
 __alDieIfError
@@ -238,6 +458,10 @@ static void S_OPENAL_NukeContext()
     }
 
     Com_Printf("OpenAL: Channels destroyed successfully.\n");
+
+#ifdef HAVE_OPENAL_EFX
+    S_OPENAL_ShutdownEFX();
+#endif
 
     for (i = 0; i < s_numSfx; i++) {
         S_OPENAL_NukeBuffer(&s_knownSfx[i].buffer);
@@ -586,7 +810,7 @@ qboolean S_OPENAL_Init()
 
     s_milesdriver            = Cvar_Get("s_milesdriver", "auto", CVAR_SOUND_LATCH | CVAR_ARCHIVE);
     s_openaldevice           = Cvar_Get("s_openaldevice", "", CVAR_SOUND_LATCH);
-    s_reverb                 = Cvar_Get("s_reverb", "0", CVAR_SOUND_LATCH | CVAR_ARCHIVE);
+    s_reverb                 = Cvar_Get("s_reverb", "1", CVAR_ARCHIVE);
     s_show_cpu               = Cvar_Get("s_show_cpu", "0", 0);
     s_show_num_active_sounds = Cvar_Get("s_show_num_active_sounds", "0", 0);
     s_show_sounds            = Cvar_Get("s_show_sounds", "0", 0);
@@ -620,9 +844,10 @@ qboolean S_OPENAL_Init()
     }
 
     al_use_reverb = false;
+#ifdef HAVE_OPENAL_EFX
+    al_use_reverb = S_OPENAL_InitEFX();
+#endif
     if (s_reverb->integer) {
-        STUB_DESC("reenable reverb support later.");
-
         if (al_use_reverb) {
             S_OPENAL_SetReverb(s_iReverbType, s_fReverbLevel);
         } else {
@@ -828,8 +1053,8 @@ void S_PrintInfo()
             dev = "{default}";
         }
         Com_Printf("device - %s\n", dev);
-        if (al_use_reverb) {
-            Com_Printf("reverb - ON\n");
+        if (al_use_reverb && s_reverb && s_reverb->integer) {
+            Com_Printf("reverb - ON (OpenAL EFX)\n");
         } else {
             Com_Printf("reverb - OFF\n");
         }
@@ -1438,6 +1663,7 @@ static void S_OPENAL_Start2DSound(
     }
 
     pChannel->set_gain(fRealVolume);
+    S_OPENAL_reverb(iFreeChannel, s_iReverbType, s_fReverbLevel);
     pChannel->play();
 
     if (s_show_sounds->integer > 0) {
@@ -1625,6 +1851,7 @@ void S_OPENAL_StartSound(
         pChannel->set_sample_playback_rate(pChannel->iBaseRate * pChannel->fNewPitchMult);
         pChannel->fNewPitchMult = 0;
 
+        S_OPENAL_reverb(iChannel, s_iReverbType, s_fReverbLevel);
         pChannel->play();
         pChannel->iEndTime   = cl.serverTime + (int)pChannel->pSfx->time_length + 250;
         pChannel->iStartTime = cl.serverTime;
@@ -2466,10 +2693,42 @@ S_OPENAL_reverb
 */
 static void S_OPENAL_reverb(int iChannel, int iReverbType, float fReverbLevel)
 {
-    // FIXME: Connect source to effect slot
-    //  see https://github.com/kcat/openal-soft/blob/master/examples/alreverb.c
+#ifdef HAVE_OPENAL_EFX
+    openal_channel *pChannel;
+    ALint           auxSlot = AL_EFFECTSLOT_NULL;
 
-    // No reverb currently.
+    if (!al_use_reverb || iChannel < 0 || iChannel >= MAX_SOUNDSYSTEM_CHANNELS) {
+        return;
+    }
+
+    pChannel = openal.channel[iChannel];
+    if (!pChannel || !pChannel->source) {
+        return;
+    }
+
+    // Apply room reverb to 3D world channels and in-game 2D weapon/player channels,
+    // while keeping menu clicks, local UI cues, music and movies dry.
+    if (s_reverb && s_reverb->integer && al_reverb_slot && fReverbLevel > 0.001f && clc.state == CA_ACTIVE) {
+        bool isWorld3D = (iChannel < MAX_SOUNDSYSTEM_CHANNELS_3D);
+        bool isGameplay2D =
+            (iChannel >= MAX_SOUNDSYSTEM_CHANNELS_3D
+             && iChannel < MAX_SOUNDSYSTEM_CHANNELS_3D + MAX_SOUNDSYSTEM_CHANNELS_2D
+             && pChannel->iEntChannel != CHAN_MENU && pChannel->iEntChannel != CHAN_LOCAL
+             && pChannel->iEntChannel != CHAN_LOCAL_SOUND
+             && !(pChannel->iFlags & CHANNEL_FLAG_LOCAL_LISTENER));
+
+        if (isWorld3D || isGameplay2D) {
+            auxSlot = (ALint)al_reverb_slot;
+        }
+    }
+
+    qalSource3i(pChannel->source, AL_AUXILIARY_SEND_FILTER, auxSlot, 0, AL_FILTER_NULL);
+    qalGetError();
+#else
+    (void)iChannel;
+    (void)iReverbType;
+    (void)fReverbLevel;
+#endif
 }
 
 /*
@@ -2482,12 +2741,11 @@ void S_OPENAL_SetReverb(int iType, float fLevel)
     s_fReverbLevel = fLevel;
     s_iReverbType  = iType;
     if (al_use_reverb) {
+#ifdef HAVE_OPENAL_EFX
+        S_OPENAL_ApplyEFXPreset(iType, (s_reverb && s_reverb->integer) ? fLevel : 0.0f);
+#endif
         s_bReverbChanged = true;
     }
-
-    // FIXME: generate effect and auxiliary effect slot
-    //  or destroy them
-    //  see https://github.com/kcat/openal-soft/blob/master/examples/alreverb.c
 }
 
 /*
@@ -2567,7 +2825,10 @@ void S_OPENAL_Update()
                 Com_Printf("OpenAL: No reverb support. Reverb is disabled.\n");
             }
         } else if (al_use_reverb) {
-            S_OPENAL_SetReverb(0, 0);
+#ifdef HAVE_OPENAL_EFX
+            S_OPENAL_ApplyEFXPreset(s_iReverbType, 0.0f);
+#endif
+            s_bReverbChanged = true;
         }
     }
 

@@ -376,13 +376,12 @@ static float	s_skyTexCoords[SKY_SUBDIVISIONS+1][SKY_SUBDIVISIONS+1][2];
 static void DrawSkySide( struct image_s *image, const int mins[2], const int maxs[2] )
 {
 	int s, t;
-	int firstVertex = tess.numVertexes;
-	//int firstIndex = tess.numIndexes;
+	int numIndexes;
 	vec4_t color;
 
-	//tess.numVertexes = 0;
-	//tess.numIndexes = 0;
-	tess.firstIndex = tess.numIndexes;
+	tess.numVertexes = 0;
+	tess.numIndexes = 0;
+	tess.firstIndex = 0;
 	
 	GL_BindToTMU( image, TB_COLORMAP );
 	GL_Cull( CT_TWO_SIDED );
@@ -417,17 +416,17 @@ static void DrawSkySide( struct image_s *image, const int mins[2], const int max
 				ri.Error(ERR_DROP, "SHADER_MAX_INDEXES hit in DrawSkySideVBO()");
 			}
 
-			tess.indexes[tess.numIndexes++] =  s +       t      * (maxs[0] - mins[0] + 1) + firstVertex;
-			tess.indexes[tess.numIndexes++] =  s +      (t + 1) * (maxs[0] - mins[0] + 1) + firstVertex;
-			tess.indexes[tess.numIndexes++] = (s + 1) +  t      * (maxs[0] - mins[0] + 1) + firstVertex;
+			tess.indexes[tess.numIndexes++] =  s +       t      * (maxs[0] - mins[0] + 1);
+			tess.indexes[tess.numIndexes++] =  s +      (t + 1) * (maxs[0] - mins[0] + 1);
+			tess.indexes[tess.numIndexes++] = (s + 1) +  t      * (maxs[0] - mins[0] + 1);
 
-			tess.indexes[tess.numIndexes++] = (s + 1) +  t      * (maxs[0] - mins[0] + 1) + firstVertex;
-			tess.indexes[tess.numIndexes++] =  s +      (t + 1) * (maxs[0] - mins[0] + 1) + firstVertex;
-			tess.indexes[tess.numIndexes++] = (s + 1) + (t + 1) * (maxs[0] - mins[0] + 1) + firstVertex;
+			tess.indexes[tess.numIndexes++] = (s + 1) +  t      * (maxs[0] - mins[0] + 1);
+			tess.indexes[tess.numIndexes++] =  s +      (t + 1) * (maxs[0] - mins[0] + 1);
+			tess.indexes[tess.numIndexes++] = (s + 1) + (t + 1) * (maxs[0] - mins[0] + 1);
 		}
 	}
 
-	// FIXME: A lot of this can probably be removed for speed, and refactored into a more convenient function
+	numIndexes = tess.numIndexes;
 	RB_UpdateTessVao(ATTR_POSITION | ATTR_TEXCOORD);
 /*
 	{
@@ -477,17 +476,18 @@ static void DrawSkySide( struct image_s *image, const int mins[2], const int max
 		GLSL_SetUniformVec4(sp, UNIFORM_DIFFUSETEXMATRIX7, st[1]);
 
 		GLSL_SetUniformInt(sp, UNIFORM_ALPHATEST, 0);
+		{
+			vec4_t noFogColor = { 0.0f, 0.0f, 0.0f, 0.0f };
+			vec2_t noFogParams = { 0.0f, 0.0f };
+			GLSL_SetUniformVec4(sp, UNIFORM_FARPLANEFOGCOLOR, noFogColor);
+			GLSL_SetUniformVec2(sp, UNIFORM_FARPLANEFOGPARAMS, noFogParams);
+		}
 	}
 
-	R_DrawElements(tess.numIndexes - tess.firstIndex, tess.firstIndex);
+	R_DrawElements(numIndexes, tess.firstIndex);
 
-	//qglDrawElements(GL_TRIANGLES, tess.numIndexes - tess.firstIndex, GL_INDEX_TYPE, BUFFER_OFFSET(tess.firstIndex * sizeof(glIndex_t)));
-	
-	//R_BindNullVBO();
-	//R_BindNullIBO();
-
-	tess.numIndexes = tess.firstIndex;
-	tess.numVertexes = firstVertex;
+	tess.numIndexes = 0;
+	tess.numVertexes = 0;
 	tess.firstIndex = 0;
 }
 
@@ -860,7 +860,7 @@ Other things could be stuck in here, like birds in the sky, etc
 ================
 */
 void RB_StageIteratorSky( void ) {
-	if ( r_fastsky->integer ) {
+	if ( r_fastsky->integer || tr.farclip ) {
 		return;
 	}
 

@@ -38,6 +38,7 @@ extern "C" {
 
 #ifdef __cplusplus
 
+#    include <atomic>
 #    include <thread>
 #    include <shared_mutex>
 #    include <chrono>
@@ -68,8 +69,8 @@ private:
     std::mutex              clientWakeMutex;
     std::condition_variable clientWake;
     std::thread            *osThread;
-    qboolean                requestThreadIsActive;
-    qboolean                shouldBeActive;
+    std::atomic<bool>       requestThreadIsActive;
+    std::atomic<bool>       shouldBeActive;
 };
 
 class UpdateChecker
@@ -94,10 +95,11 @@ private:
     //
     // Version information
     //
-    int  lastMajor;
-    int  lastMinor;
-    int  lastPatch;
-    bool versionChecked;
+    mutable std::mutex versionMutex;
+    int                lastMajor;
+    int                lastMinor;
+    int                lastPatch;
+    bool               versionChecked;
 
     std::chrono::time_point<std::chrono::steady_clock> nextMessageTime;
 

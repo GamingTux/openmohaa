@@ -430,6 +430,10 @@ void CG_OffsetFirstPersonView(refEntity_t *pREnt, qboolean bUseWorldPosition)
             origin[2] += fPhase;
         }
 
+        if (cg_modernGunplay && cg_modernGunplay->integer && cg.landDip > 0.0f) {
+            origin[2] -= cg.landDip;
+        }
+
         iMask = MASK_PLAYERSOLID;
     }
 
@@ -535,8 +539,24 @@ Prepares fog values for rendering
 ===============
 */
 void CG_SetupFog() {
-    cg.refdef.farplane_distance = cg.farplane_distance;
-    cg.refdef.farplane_bias = cg.farplane_bias;
+    float farDist = cg.farplane_distance;
+    float farBias = cg.farplane_bias;
+
+    // Client-side visual farplane extension & soft fog ramp.
+    // Server world->farplane_distance (used by AI vision in fgame) remains unchanged!
+    if (cg_extendedFarplane && cg_extendedFarplane->integer && farDist > 1.0f) {
+        float scale   = (cg_farplaneScale) ? Com_Clamp(1.0f, 2.5f, cg_farplaneScale->value) : 1.35f;
+        float minBias;
+
+        farDist *= scale;
+        minBias = farDist * 0.16f;
+        if (farBias < minBias) {
+            farBias = minBias;
+        }
+    }
+
+    cg.refdef.farplane_distance = farDist;
+    cg.refdef.farplane_bias = farBias;
     cg.refdef.farplane_color[0] = cg.farplane_color[0];
     cg.refdef.farplane_color[1] = cg.farplane_color[1];
     cg.refdef.farplane_color[2] = cg.farplane_color[2];
@@ -627,6 +647,50 @@ static int CG_CalcViewValues(void)
                     }
                 }
             }
+        }
+        if (cg_modernGunplay && cg_modernGunplay->integer && !(ps->pm_flags & PMF_CAMERA_VIEW)
+            && !cg_3rd_person->integer) {
+            float    dt       = Com_Clamp(0.001f, 0.1f, (float)cg.frametime * 0.001f);
+            qboolean onGround = (ps->groundEntityNum != ENTITYNUM_NONE) ? qtrue : qfalse;
+            vec3_t   vFwd, vRight, vUp;
+            float    sideSpeed, targetRoll, blend;
+
+            // Gentle strafe-tilt roll (max +/-1.1 deg, muted while zoomed in sniper scope)
+            AngleVectors(ps->viewangles, vFwd, vRight, vUp);
+            sideSpeed  = DotProduct(ps->velocity, vRight);
+            targetRoll = Com_Clamp(-1.1f, 1.1f, sideSpeed * 0.0042f);
+            if (cg.snap->ps.stats[STAT_INZOOM] && cg.snap->ps.stats[STAT_INZOOM] <= 30) {
+                targetRoll *= 0.15f;
+            }
+            blend         = Com_Clamp(0.0f, 1.0f, dt * 8.5f);
+            cg.strafeRoll += (targetRoll - cg.strafeRoll) * blend;
+
+            // Recoil micro-roll punch decay
+            cg.recoilRoll *= expf(-dt * 14.0f);
+            if (fabsf(cg.recoilRoll) < 0.005f) {
+                cg.recoilRoll = 0.0f;
+            }
+
+            // Soft landing camera dip
+            if (onGround && !cg.prevOnGround && cg.prevVelZ < -140.0f) {
+                float impact = Com_Clamp(0.0f, 3.6f, (-cg.prevVelZ - 140.0f) * 0.011f);
+                if (impact > cg.landDip) {
+                    cg.landDip = impact;
+                }
+            }
+            cg.landDip *= expf(-dt * 9.0f);
+            if (cg.landDip < 0.02f) {
+                cg.landDip = 0.0f;
+            }
+            cg.prevOnGround = onGround;
+            cg.prevVelZ     = ps->velocity[2];
+
+            cg.refdefViewAngles[2] += cg.strafeRoll + cg.recoilRoll;
+            cg.refdef.vieworg[2] -= cg.landDip;
+        } else {
+            cg.strafeRoll = 0.0f;
+            cg.recoilRoll = 0.0f;
+            cg.landDip    = 0.0f;
         }
     }
 
@@ -1025,6 +1089,25 @@ void CG_DrawActiveFrame(int serverTime, int frameTime, stereoFrame_t stereoView,
     CG_AddBulletTracers();
     CG_AddBulletImpacts();
     CG_AddBeams();
+
+    // Dynamic muzzle flash light for player shots (illuminates nearby walls/bunkers via modernDlights)
+    if (cg_modernGunplay && cg_modernGunplay->integer && cg.muzzleLightTime > 0
+        && cg.time >= cg.muzzleLightTime && cg.time - cg.muzzleLightTime < 75
+        && !cg.renderingThirdPerson && !(cg.predicted_player_state.pm_flags & PMF_CAMERA_VIEW)) {
+        float  frac = 1.0f - (float)(cg.time - cg.muzzleLightTime) / 75.0f;
+        float  intensity;
+        vec3_t vFwd, vRight, vUp, vLightOrg;
+
+        frac *= frac;
+        intensity = cg.muzzleLightRadius * frac;
+        if (intensity > 24.0f) {
+            AngleVectors(cg.refdefViewAngles, vFwd, vRight, vUp);
+            VectorMA(cg.refdef.vieworg, 28.0f, vFwd, vLightOrg);
+            VectorMA(vLightOrg, 5.0f, vRight, vLightOrg);
+            VectorMA(vLightOrg, -5.0f, vUp, vLightOrg);
+            cgi.R_AddLightToScene(vLightOrg, intensity, 1.0f, 0.72f, 0.34f, 0);
+        }
+    }
 
     if (cg_acidtrip->integer) {
         // lol disco
