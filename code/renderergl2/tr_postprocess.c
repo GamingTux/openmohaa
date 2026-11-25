@@ -535,6 +535,127 @@ static void RB_GetMapColorGrade(vec4_t grade)
 	}
 }
 
+static void RB_ComputeMotionBlurParams(const vec4_t srcUvBounds, vec4_t outParams, float *outBlurRatio)
+{
+	static qboolean s_hasPrev = qfalse;
+	static vec3_t   s_prevFwd = { 1.0f, 0.0f, 0.0f };
+	static vec3_t   s_prevOrg = { 0.0f, 0.0f, 0.0f };
+	static double   s_prevTime = 0.0;
+	static float    s_smoothU = 0.0f;
+	static float    s_smoothV = 0.0f;
+
+	float strength = r_motionBlur ? Com_Clamp(0.0f, 2.0f, r_motionBlur->value) : 0.0f;
+	float spanU = MAX(0.001f, srcUvBounds[2] - srcUvBounds[0]);
+	float spanV = MAX(0.001f, srcUvBounds[3] - srcUvBounds[1]);
+
+	VectorSet4(outParams, 0.0f, 0.0f, 2.0f / spanU, 2.0f / spanV);
+	if (outBlurRatio)
+		*outBlurRatio = 0.0f;
+
+	if (strength <= 0.001f || (backEnd.refdef.rdflags & (RDF_NOWORLDMODEL | RDF_HUD)))
+	{
+		s_hasPrev = qfalse;
+		s_smoothU = 0.0f;
+		s_smoothV = 0.0f;
+		return;
+	}
+
+	{
+		vec3_t curFwd, curLeft, curUp, curOrg;
+		double nowTime = backEnd.refdef.floatTime;
+		double dt = nowTime - s_prevTime;
+		float rawU = 0.0f, rawV = 0.0f;
+
+		VectorCopy(backEnd.refdef.viewaxis[0], curFwd);
+		VectorCopy(backEnd.refdef.viewaxis[1], curLeft);
+		VectorCopy(backEnd.refdef.viewaxis[2], curUp);
+		VectorCopy(backEnd.refdef.vieworg, curOrg);
+
+		if (s_hasPrev && dt > 0.0005 && dt < 0.20)
+		{
+			vec3_t deltaOrg;
+			float fwdDot = DotProduct(s_prevFwd, curFwd);
+			float moveSq;
+
+			VectorSubtract(curOrg, s_prevOrg, deltaOrg);
+			moveSq = DotProduct(deltaOrg, deltaOrg);
+
+			// Reject teleports, level loads, respawns, and abrupt cutscene camera cuts
+			if (fwdDot > 0.80f && moveSq < (256.0f * 256.0f))
+			{
+				float fovX = Com_Clamp(20.0f, 130.0f, backEnd.refdef.fov_x > 1.0f ? backEnd.refdef.fov_x : 80.0f);
+				float fovY = Com_Clamp(15.0f, 110.0f, backEnd.refdef.fov_y > 1.0f ? backEnd.refdef.fov_y : 60.0f);
+				float tanHalfX = tanf(DEG2RAD(fovX) * 0.5f);
+				float tanHalfY = tanf(DEG2RAD(fovY) * 0.5f);
+				float dLeft = DotProduct(s_prevFwd, curLeft);
+				float dUp   = DotProduct(s_prevFwd, curUp);
+
+				// Keep sniper scopes & binoculars razor sharp
+				float zoomFade = Com_Clamp(0.0f, 1.0f, (fovX - 35.0f) / 25.0f);
+				// Normalize toward a 60 Hz shutter so lower framerates don't over-blur
+				float fpsNorm  = Com_Clamp(0.40f, 1.15f, (float)(0.01667 / dt));
+				float shutter  = 0.20f * strength * zoomFade * fpsNorm;
+
+				rawU = -(dLeft / (2.0f * MAX(0.1f, tanHalfX))) * shutter;
+				rawV =  (dUp   / (2.0f * MAX(0.1f, tanHalfY))) * shutter;
+			}
+			else
+			{
+				s_smoothU = 0.0f;
+				s_smoothV = 0.0f;
+			}
+		}
+		else
+		{
+			// Pause menu / first frame / long hitch: clear immediately so paused frames never stay blurred
+			s_smoothU = 0.0f;
+			s_smoothV = 0.0f;
+		}
+
+		VectorCopy(curFwd, s_prevFwd);
+		VectorCopy(curOrg, s_prevOrg);
+		s_prevTime = nowTime;
+		s_hasPrev = qtrue;
+
+		// Asymmetric smoothing: silky ramp-up, crisp stop when camera halts
+		{
+			float rawMag = sqrtf(rawU * rawU + rawV * rawV);
+			float oldMag = sqrtf(s_smoothU * s_smoothU + s_smoothV * s_smoothV);
+			float alpha  = (rawMag >= oldMag) ? 0.58f : 0.72f;
+			float mag;
+			float maxRad = 0.0060f * Com_Clamp(0.5f, 1.6f, strength);
+
+			s_smoothU = s_smoothU * (1.0f - alpha) + rawU * alpha;
+			s_smoothV = s_smoothV * (1.0f - alpha) + rawV * alpha;
+
+			mag = sqrtf(s_smoothU * s_smoothU + s_smoothV * s_smoothV);
+
+			// Deadzone: exact 0.0 when standing still or micro-aiming -> triggers GPU early-out
+			if (mag < 0.00045f)
+			{
+				s_smoothU = 0.0f;
+				s_smoothV = 0.0f;
+				return;
+			}
+
+			// Soft ceiling so fast flicks stay silky smooth without discrete ghosting
+			if (mag > maxRad)
+			{
+				float s = maxRad / mag;
+				s_smoothU *= s;
+				s_smoothV *= s;
+				mag = maxRad;
+			}
+
+			// Scale into active viewport UV sub-rect (matches native 100% and DRS identically)
+			outParams[0] = s_smoothU * spanU;
+			outParams[1] = s_smoothV * spanV;
+			if (outBlurRatio)
+				*outBlurRatio = Com_Clamp(0.0f, 1.0f, (mag - 0.00045f) / 0.0038f);
+		}
+	}
+}
+
 void RB_ModernPostProcess(FBO_t *srcFbo, ivec4_t srcBox, FBO_t *dstFbo, ivec4_t dstBox)
 {
 	int bloomMode = (r_bloom && tr.bloomFbo[0] && tr.bloomFbo[1]) ? r_bloom->integer : 0;
@@ -542,10 +663,11 @@ void RB_ModernPostProcess(FBO_t *srcFbo, ivec4_t srcBox, FBO_t *dstFbo, ivec4_t 
 	int sharpMode = r_sharpen ? r_sharpen->integer : 0;
 	vec4_t combineParams;
 	vec4_t srcUvBounds;
+	vec4_t motionParams;
 	vec2_t sharpParams;
 	float toneMix;
 	float invSrcW, invSrcH;
-	float scaleX, sharpAmt;
+	float scaleX, sharpAmt, blurRatio;
 	shaderProgram_t *combineProg;
 
 	if (!srcFbo)
@@ -634,17 +756,65 @@ void RB_ModernPostProcess(FBO_t *srcFbo, ivec4_t srcBox, FBO_t *dstFbo, ivec4_t 
 	{
 		sharpAmt = Com_Clamp(0.0f, 0.68f, 0.24f + (1.0f - scaleX) * 1.25f);
 	}
+	RB_ComputeMotionBlurParams(srcUvBounds, motionParams, &blurRatio);
+
+	// Back off CAS sharpening smoothly during fast camera turns (avoids ringing & keeps total taps <= 5)
+	sharpAmt *= (1.0f - blurRatio);
+	if (sharpAmt < 0.02f)
+		sharpAmt = 0.0f;
+
 	sharpParams[0] = sharpAmt;
-	sharpParams[1] = 0.0f;
+	sharpParams[1] = (r_underwaterFx && r_underwaterFx->integer > 0 && (backEnd.refdef.rdflags & RDF_UNDERWATER))
+		? (1.0f + (float)fmod(backEnd.refdef.floatTime * 2.6, 62.831853))
+		: 0.0f;
 
 	combineProg = (bloomMode > 0 && tr.bloomImage[0]) ? &tr.postFxShader[2] : &tr.postFxShader[3];
 	{
 		vec4_t grade;
+		vec4_t shaftParams = { 0.5f, 0.5f, 0.0f, 0.0f };
+
+		// Subtle 1/6-res radial sun shafts when facing the sun (0 taps when facing away)
+		if (bloomMode > 0 && tr.bloomImage[0] && r_sunShafts && r_sunShafts->integer > 0
+			&& !(backEnd.refdef.rdflags & (RDF_NOWORLDMODEL | RDF_HUD | RDF_UNDERWATER)))
+		{
+			vec3_t sDir;
+			VectorCopy(tr.sunDirection, sDir);
+			if (VectorNormalize(sDir) < 0.01f) {
+				VectorSet(sDir, 0.42f, 0.30f, 0.85f);
+				VectorNormalize(sDir);
+			}
+			{
+				float sunDot = DotProduct(sDir, backEnd.viewParms.ori.axis[0]);
+				if (sunDot > 0.25f) {
+					mat4_t trans, model, mvp;
+					vec4_t pos, hpos;
+					float dist = backEnd.viewParms.zFar * 0.55f;
+					Mat4Translation(backEnd.viewParms.ori.origin, trans);
+					Mat4Multiply(backEnd.viewParms.world.modelMatrix, trans, model);
+					Mat4Multiply(backEnd.viewParms.projectionMatrix, model, mvp);
+					VectorScale(sDir, dist, pos);
+					pos[3] = 1.0f;
+					Mat4Transform(mvp, pos, hpos);
+					if (hpos[3] > 0.001f) {
+						float u = 0.5f + 0.5f * (hpos[0] / hpos[3]);
+						float v = 0.5f + 0.5f * (hpos[1] / hpos[3]);
+						float fade = Com_Clamp(0.0f, 1.0f, (sunDot - 0.25f) / 0.60f);
+						float edgeFade = 1.0f - Com_Clamp(0.0f, 1.0f, (fabsf(u - 0.5f) - 0.55f) * 1.4f);
+						shaftParams[0] = Com_Clamp(-0.2f, 1.2f, u);
+						shaftParams[1] = Com_Clamp(-0.2f, 1.2f, v);
+						shaftParams[2] = fade * fade * edgeFade * ((r_sunShafts->integer >= 2) ? 0.68f : 0.44f);
+					}
+				}
+			}
+		}
+
 		RB_GetMapColorGrade(grade);
 		GLSL_BindProgram(combineProg);
 		GLSL_SetUniformVec4(combineProg, UNIFORM_POSTFXBOUNDS, srcUvBounds);
 		GLSL_SetUniformVec2(combineProg, UNIFORM_POSTFXSHARPEN, sharpParams);
 		GLSL_SetUniformVec4(combineProg, UNIFORM_POSTFXGRADE, grade);
+		GLSL_SetUniformVec4(combineProg, UNIFORM_POSTFXMOTION, motionParams);
+		GLSL_SetUniformVec4(combineProg, UNIFORM_POSTFXSHAFTS, shaftParams);
 	}
 
 	if (bloomMode > 0 && tr.bloomImage[0])

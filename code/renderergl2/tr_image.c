@@ -21,6 +21,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_image.c
 #include "tr_local.h"
+#include "../renderercommon/tr_gore_tex.h"
 
 #include "tr_dsa.h"
 
@@ -2907,6 +2908,32 @@ void R_CreateBuiltinImages( void ) {
 
 	R_CreateDlightImage();
 	R_CreateFogImage();
+
+	{
+		static const char *bloodNames[5] = {
+			"*remaster_blood_splat0",
+			"*remaster_blood_splat1",
+			"*remaster_blood_pool",
+			"*remaster_blood_mist",
+			"*remaster_gun_smoke"
+		};
+		byte *bloodBuf = ri.Hunk_AllocateTempMemory(REMASTER_BLOOD_TEX_SIZE * REMASTER_BLOOD_TEX_SIZE * 4);
+		int b;
+		for (b = 0; b < 5; b++)
+		{
+			R_GenerateBloodTexture(b, bloodBuf);
+			tr.bloodImages[b] = R_CreateImage(
+				bloodNames[b],
+				bloodBuf,
+				REMASTER_BLOOD_TEX_SIZE,
+				REMASTER_BLOOD_TEX_SIZE,
+				IMGTYPE_COLORALPHA,
+				IMGFLAG_CLAMPTOEDGE | IMGFLAG_MIPMAP,
+				0
+			);
+		}
+		ri.Hunk_FreeTempMemory(bloodBuf);
+	}
 
 	if (glRefConfig.framebufferObject)
 	{

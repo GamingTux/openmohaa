@@ -472,6 +472,90 @@ void CG_OffsetFirstPersonView(refEntity_t *pREnt, qboolean bUseWorldPosition)
         VectorMA(pREnt->origin, vDelta[0], mat[0], pREnt->origin);
         VectorMA(pREnt->origin, vDelta[1], mat[1], pREnt->origin);
         VectorMA(pREnt->origin, vDelta[2], mat[2], pREnt->origin);
+
+        // Subtle organic first-person idle breathing + inertial weapon sway on weapon & hands (crosshair stays locked)
+        if (cg_modernGunplay && cg_modernGunplay->integer && !cg.snap->ps.stats[STAT_INZOOM]) {
+            float horizSpeed = sqrtf(vVelocity[0] * vVelocity[0] + vVelocity[1] * vVelocity[1]);
+            float idleBlend  = 1.0f - Com_Clamp(0.0f, 0.75f, horizSpeed / 140.0f);
+            float t          = cg.time * 0.001f;
+            float breathSin  = sinf(t * 1.55f);
+            float breathCos  = cosf(t * 1.55f);
+            float swaySin    = sinf(t * 0.775f + 0.6f);
+
+            // Exponentially damped inertial mouse-look sway
+            if (cg.lastSwayTime <= 0 || cg.time < cg.lastSwayTime || (cg.time - cg.lastSwayTime) > 250) {
+                cg.swayYaw       = 0.0f;
+                cg.swayPitch     = 0.0f;
+                cg.lastSwayYaw   = cg.refdefViewAngles[YAW];
+                cg.lastSwayPitch = cg.refdefViewAngles[PITCH];
+            } else {
+                float dt    = (cg.time - cg.lastSwayTime) * 0.001f;
+                float dYaw  = AngleSubtract(cg.refdefViewAngles[YAW], cg.lastSwayYaw);
+                float dPit  = AngleSubtract(cg.refdefViewAngles[PITCH], cg.lastSwayPitch);
+                float decay = expf(-dt * 11.0f);
+                cg.swayYaw   = Com_Clamp(-2.6f, 2.6f, cg.swayYaw * decay - dYaw * 0.24f);
+                cg.swayPitch = Com_Clamp(-1.8f, 1.8f, cg.swayPitch * decay - dPit * 0.20f);
+                cg.lastSwayYaw   = cg.refdefViewAngles[YAW];
+                cg.lastSwayPitch = cg.refdefViewAngles[PITCH];
+            }
+            cg.lastSwayTime = cg.time;
+
+            float offUp   = (breathSin + 0.18f * sinf(t * 3.10f - 0.5f)) * 0.24f * idleBlend + cg.swayPitch * 0.14f;
+            float offLeft = swaySin * 0.13f * idleBlend + cg.swayYaw * 0.18f;
+            float offFwd  = breathCos * 0.08f * idleBlend;
+
+            // Smooth tactical sprint weapon lower & stride bob
+            {
+                qboolean sprinting = (horizSpeed > 272.0f)
+                    && (cg.predicted_player_state.groundEntityNum != ENTITYNUM_NONE)
+                    && !cg.snap->ps.stats[STAT_INZOOM]
+                    && (cg.time - cg.lastFireTime) > 250;
+                float targetSprint = sprinting ? 1.0f : 0.0f;
+                float sDt = (cg.frametime > 0 && cg.frametime < 100) ? (cg.frametime * 0.001f) : 0.016f;
+                cg.sprintFrac += (targetSprint - cg.sprintFrac) * (1.0f - expf(-sDt * 10.0f));
+                if (cg.sprintFrac < 0.005f) cg.sprintFrac = 0.0f;
+
+                if (cg.sprintFrac > 0.005f) {
+                    float stride = sinf(t * 11.5f);
+                    offUp   -= (2.2f + fabsf(stride) * 0.55f) * cg.sprintFrac;
+                    offLeft += (0.85f + stride * 0.65f) * cg.sprintFrac;
+                    offFwd  -= 0.6f * cg.sprintFrac;
+                }
+            }
+
+            VectorMA(pREnt->origin, offFwd, mat[0], pREnt->origin);
+            VectorMA(pREnt->origin, offLeft, mat[1], pREnt->origin);
+            VectorMA(pREnt->origin, offUp, mat[2], pREnt->origin);
+
+            // Gentle breathing + inertial sway + tactical sprint weapon cant
+            vec3_t breathAngles, breathAxis[3], baseAxis[3];
+            breathAngles[PITCH] = -breathSin * 0.30f * idleBlend + cg.swayPitch * 0.65f + cg.sprintFrac * 6.5f;
+            breathAngles[YAW]   = swaySin * 0.16f * idleBlend + cg.swayYaw * 0.85f + cg.sprintFrac * 10.0f;
+            breathAngles[ROLL]  = swaySin * 0.22f * idleBlend - cg.swayYaw * 0.55f - cg.sprintFrac * 7.5f;
+            AnglesToAxis(breathAngles, breathAxis);
+            AxisCopy(pREnt->axis, baseAxis);
+            MatrixMultiply(breathAxis, baseAxis, pREnt->axis);
+        }
+
+        // Barrel heat smoke wisps rising from muzzle after rapid bursts
+        if (cg.barrelHeat > 0.0f) {
+            float hDt = (cg.frametime > 0 && cg.frametime < 150) ? (cg.frametime * 0.001f) : 0.016f;
+            cg.barrelHeat -= hDt * 1.15f;
+            if (cg.barrelHeat < 0.0f) {
+                cg.barrelHeat = 0.0f;
+            }
+            if (cg_gunSmoke && cg_gunSmoke->integer > 0 && cg.barrelHeat > 1.35f
+                && !cg.snap->ps.stats[STAT_INZOOM] && (cg.time - cg.lastSmokeTime) >= 80) {
+                vec3_t smokePos, smokeVel;
+                cg.lastSmokeTime = cg.time;
+                VectorMA(origin, 23.0f, mat[0], smokePos);
+                VectorMA(smokePos, -5.2f, mat[1], smokePos);
+                VectorMA(smokePos, -4.4f, mat[2], smokePos);
+                VectorScale(vVelocity, 0.25f, smokeVel);
+                VectorMA(smokeVel, 6.0f, mat[0], smokeVel);
+                CG_SpawnGunSmoke(smokePos, smokeVel, Com_Clamp(0.0f, 1.0f, (cg.barrelHeat - 1.35f) / 3.5f));
+            }
+        }
     }
 
     VectorCopy(origin, cg.playerHeadPos);
@@ -497,11 +581,22 @@ static int CG_CalcFov(void)
     int   inwater;
     float fov_ratio;
 
+    float baseFov = cg.camera_fov;
     fov_ratio = (float)cg.refdef.width / (float)cg.refdef.height * (3.0 / 4.0);
+    if (cg_widescreenFov && cg_widescreenFov->integer > 0 && fov_ratio > 1.05f
+        && cg.snap && !cg.snap->ps.stats[STAT_INZOOM]
+        && !(cg.predicted_player_state.pm_flags & PMF_CAMERA_VIEW)
+        && baseFov >= 65.0f && baseFov <= 90.0f) {
+        baseFov += 8.0f;
+    }
+    if (cg.sprintFrac > 0.005f && cg.snap && !cg.snap->ps.stats[STAT_INZOOM]
+        && !(cg.predicted_player_state.pm_flags & PMF_CAMERA_VIEW)) {
+        baseFov += 4.5f * cg.sprintFrac;
+    }
     if (fov_ratio == 1) {
-        fov_x = cg.camera_fov;
+        fov_x = baseFov;
     } else {
-        fov_x = RAD2DEG(atan(tan(DEG2RAD(cg.camera_fov / 2.0)) * fov_ratio)) * 2.0;
+        fov_x = RAD2DEG(atan(tan(DEG2RAD(baseFov / 2.0)) * fov_ratio)) * 2.0;
     }
 
     x = cg.refdef.width / tan(fov_x / 360 * M_PI);
@@ -516,6 +611,7 @@ static int CG_CalcFov(void)
         fov_x += v;
         fov_y -= v;
         inwater = qtrue;
+        cg.refdef.rdflags |= RDF_UNDERWATER;
     } else {
         inwater = qfalse;
     }
@@ -692,6 +788,80 @@ static int CG_CalcViewValues(void)
             cg.recoilRoll = 0.0f;
             cg.landDip    = 0.0f;
         }
+
+        // Track incoming damage direction for HUD directional damage indicator
+        {
+            int curHp = cg.snap->ps.stats[STAT_HEALTH];
+            if (cg.prevHealth > 0 && curHp > 0 && curHp < cg.prevHealth) {
+                float dx = -cg.snap->ps.damage_angles[PITCH];
+                float dy = -cg.snap->ps.damage_angles[YAW];
+                if ((dx * dx + dy * dy) > 0.04f) {
+                    cg.dmgIndYaw      = cg.refdefViewAngles[YAW] + RAD2DEG(atan2f(dy, dx));
+                    cg.dmgIndTime     = cg.time;
+                    cg.dmgIndStrength = Com_Clamp(0.55f, 1.0f, (float)(cg.prevHealth - curHp) / 22.0f + 0.40f);
+                }
+            }
+            cg.prevHealth = curHp;
+        }
+
+        // Sniper Hold-Breath (Shift / +sprint while zoomed stabilizes scope sway for ~4s)
+        if (cg_holdBreath && cg_holdBreath->integer > 0 && cg.snap->ps.stats[STAT_INZOOM] && cg.snap->ps.stats[STAT_INZOOM] <= 30) {
+            usercmd_t ucmd;
+            int       cmdNum = cgi.GetCurrentCmdNumber();
+            float     bDt    = (cg.frametime > 0 && cg.frametime < 100) ? (cg.frametime * 0.001f) : 0.016f;
+            qboolean  wantsHold = qfalse;
+
+            if (cgi.GetUserCmd(cmdNum, &ucmd)) {
+                // Shift (+speed) clears BUTTON_RUN when cl_run 1, or explicit +sprint
+                wantsHold = (!(ucmd.buttons & BUTTON_RUN) || (ucmd.buttons & BUTTON_SPRINT)) ? qtrue : qfalse;
+            }
+            if (cg.breathStamina <= 0.0f && !cg.breathExhausted) {
+                cg.breathStamina = 100.0f;
+            }
+            if (wantsHold && !cg.breathExhausted && cg.breathStamina > 0.0f) {
+                cg.holdingBreath = qtrue;
+                cg.breathStamina -= bDt * 25.0f;
+                if (cg.breathStamina <= 0.0f) {
+                    cg.breathStamina   = 0.0f;
+                    cg.breathExhausted = qtrue;
+                    cg.holdingBreath   = qfalse;
+                }
+            } else {
+                cg.holdingBreath = qfalse;
+                cg.breathStamina = Com_Clamp(0.0f, 100.0f, cg.breathStamina + bDt * 28.0f);
+                if (cg.breathExhausted && cg.breathStamina >= 35.0f) {
+                    cg.breathExhausted = qfalse;
+                }
+            }
+
+            // Subtle scope breathing sway when not holding breath, rock-steady while holding breath
+            if (!cg.holdingBreath) {
+                float t = cg.time * 0.001f;
+                float amp = cg.breathExhausted ? 0.24f : 0.14f;
+                cg.refdefViewAngles[PITCH] += sinf(t * 1.65f) * amp;
+                cg.refdefViewAngles[YAW]   += cosf(t * 0.92f) * (amp * 0.72f);
+            }
+        } else {
+            float bDt = (cg.frametime > 0 && cg.frametime < 100) ? (cg.frametime * 0.001f) : 0.016f;
+            cg.holdingBreath   = qfalse;
+            cg.breathStamina   = Com_Clamp(0.0f, 100.0f, (cg.breathStamina <= 0.0f && !cg.breathExhausted) ? 100.0f : (cg.breathStamina + bDt * 30.0f));
+            if (cg.breathExhausted && cg.breathStamina >= 35.0f) {
+                cg.breathExhausted = qfalse;
+            }
+        }
+
+        // Damped proximity explosion camera tremor
+        if (cg_explosionFx && cg_explosionFx->integer > 0 && cg.explShakeTime > 0) {
+            int el = cg.time - cg.explShakeTime;
+            if (el >= 0 && el < 750) {
+                float dec = 1.0f - ((float)el / 750.0f);
+                float amp = cg.explShakeAmp * dec * dec * 2.4f;
+                float t   = cg.time * 0.045f;
+                cg.refdefViewAngles[PITCH] += sinf(t * 1.13f) * amp;
+                cg.refdefViewAngles[YAW]   += cosf(t * 0.91f) * amp * 0.75f;
+                cg.refdefViewAngles[ROLL]  += sinf(t * 1.47f + 0.8f) * amp * 1.15f;
+            }
+        }
     }
 
     // FIXME: fffx screen shake on win32 builds?
@@ -710,8 +880,17 @@ static int CG_CalcViewValues(void)
         }
     }
 
-    // calculate position of player's head
-    cg.refdef.vieworg[2] += cg.predicted_player_state.viewheight;
+    // calculate position of player's head (with smooth crouch/stand camera damping)
+    {
+        float targetVH = (float)cg.predicted_player_state.viewheight;
+        if (cg_modernGunplay && cg_modernGunplay->integer > 0 && cg.smoothViewHeight > 1.0f && fabsf(targetVH - cg.smoothViewHeight) < 60.0f) {
+            float vhDt = (cg.frametime > 0 && cg.frametime < 100) ? (cg.frametime * 0.001f) : 0.016f;
+            cg.smoothViewHeight += (targetVH - cg.smoothViewHeight) * (1.0f - expf(-vhDt * 14.0f));
+        } else {
+            cg.smoothViewHeight = targetVH;
+        }
+        cg.refdef.vieworg[2] += cg.smoothViewHeight;
+    }
     // save off the position of the player's head
     VectorCopy(cg.refdef.vieworg, cg.playerHeadPos);
 
@@ -1059,6 +1238,7 @@ void CG_DrawActiveFrame(int serverTime, int frameTime, stereoFrame_t stereoView,
     if (!cg.hyperspace) {
         CG_AddPacketEntities(); // after calcViewValues, so predicted player state is correct
         CG_AddMarks();
+        CG_AddGoreParticles();
     }
 
     // finish up the rest of the refdef

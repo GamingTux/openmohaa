@@ -5927,10 +5927,12 @@ void ClientGameCommandManager::EventViewKick(Event *ev)
         cg.viewkick[1] = -fYawMax;
     }
 
+    cg.lastFireTime = cg.time;
+    cg.barrelHeat   = Com_Clamp(0.0f, 6.0f, cg.barrelHeat + 0.90f);
     if (cg_modernGunplay && cg_modernGunplay->integer) {
         float kickMag        = fabsf(vkmax[0]) + fabsf(vkmin[0]);
         cg.muzzleLightTime   = cg.time;
-        cg.muzzleLightRadius = Com_Clamp(165.0f, 340.0f, 175.0f + kickMag * 32.0f);
+        cg.muzzleLightRadius = Com_Clamp(205.0f, 385.0f, 220.0f + kickMag * 38.0f);
         cg.recoilRoll        = Com_Clamp(-2.0f, 2.0f, cg.recoilRoll + crandom() * (0.35f + kickMag * 0.16f));
     }
 }

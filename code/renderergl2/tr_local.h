@@ -619,6 +619,7 @@ typedef struct shader_s {
 
 	cullType_t	cullType;				// CT_FRONT_SIDED, CT_BACK_SIDED, or CT_TWO_SIDED
 	qboolean	polygonOffset;			// set for decals and other items that must be offset 
+	qboolean	isWetBlood;				// procedural wet liquid blood decal (specular meniscus + Fresnel)
 	qboolean	noMipMaps;				// for console fonts, 2D elements, etc.
 	qboolean	noPicMip;				// for images that must always be full resolution
 
@@ -781,8 +782,9 @@ enum
 	MODELDEF_USE_ALPHATEST       = 0x0002,
 	MODELDEF_USE_SPECULAR        = 0x0004,
 	MODELDEF_USE_SUN_SHADOW      = 0x0008,
-	MODELDEF_ALL                 = 0x000F,
-	MODELDEF_COUNT               = 0x0010
+	MODELDEF_USE_NORMALMAP       = 0x0010,
+	MODELDEF_ALL                 = 0x001F,
+	MODELDEF_COUNT               = 0x0020
 };
 
 enum
@@ -967,6 +969,8 @@ typedef enum
 	UNIFORM_POSTFXBOUNDS,
 	UNIFORM_POSTFXSHARPEN,
 	UNIFORM_POSTFXGRADE,
+	UNIFORM_POSTFXMOTION,
+	UNIFORM_POSTFXSHAFTS,
 	UNIFORM_WINDPARAMS,
 
 	UNIFORM_COUNT
@@ -2199,6 +2203,7 @@ typedef struct {
 	image_t					*flareImage;
 	image_t					*whiteImage;			// full of 0xff
 	image_t					*identityLightImage;	// full of tr.identityLightByte
+	image_t					*bloodImages[5];		// procedural remaster blood splat/pool/mist + gunsmoke textures
 
 	image_t                 *shadowCubemaps[MAX_DLIGHTS];
 	
@@ -2280,6 +2285,7 @@ typedef struct {
 	shaderProgram_t modelLightShader[MODELDEF_COUNT];
 	shaderProgram_t waterShader[WATERDEF_COUNT];
 	shaderProgram_t softParticleShader[SOFTPARTDEF_COUNT];
+	shaderProgram_t wetBloodShader;
 	shaderProgram_t pshadowShader;
 	shaderProgram_t down4xShader;
 	shaderProgram_t bokehShader;
@@ -2588,6 +2594,7 @@ extern cvar_t	*r_drawspherelights;
 extern cvar_t	*r_modelPerPixelLighting;
 extern cvar_t	*r_modernWater;
 extern cvar_t	*r_worldMicroRelief;
+extern cvar_t	*r_worldParallax;
 extern cvar_t	*r_bloom;
 extern cvar_t	*r_filmicTonemap;
 extern cvar_t	*r_renderScale;
@@ -2603,6 +2610,10 @@ extern cvar_t	*r_extendedLod;
 extern cvar_t	*r_foliageWind;
 extern cvar_t	*r_emissiveGlow;
 extern cvar_t	*r_mapAtmosphere;
+extern cvar_t	*r_motionBlur;
+extern cvar_t	*r_weatherWetness;
+extern cvar_t	*r_sunShafts;
+extern cvar_t	*r_underwaterFx;
 
 extern cvar_t	*r_numdebuglines;
 extern cvar_t	*r_stipplelines;

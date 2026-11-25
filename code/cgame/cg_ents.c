@@ -664,6 +664,46 @@ void CG_AddPacketEntities(void)
             CG_MultiBeam(cent);
         }
     }
+
+    // Remaster 3D grenade proximity scan (checks only nearby unattached world entities)
+    if (cg_grenadeIndicator && cg_grenadeIndicator->integer > 0) {
+        float bestDistSq = 360.0f * 360.0f;
+        vec3_t bestPos;
+        qboolean found = qfalse;
+
+        for (num = 0; num < cg.snap->numEntities; num++) {
+            int entNum = cg.snap->entities[num].number;
+            cent = &cg_entities[entNum];
+            if (cent->currentState.parent != ENTITYNUM_NONE
+                || cent->currentState.eType == ET_PLAYER
+                || cent->currentState.modelindex <= 0) {
+                continue;
+            }
+            {
+                vec3_t diff;
+                float  d2;
+                VectorSubtract(cent->lerpOrigin, cg.refdef.vieworg, diff);
+                d2 = DotProduct(diff, diff);
+                if (d2 < (10.0f * 10.0f) || d2 >= bestDistSq) {
+                    continue;
+                }
+                {
+                    const char *mname = CG_ConfigString(CS_MODELS + cent->currentState.modelindex);
+                    if (mname && (Q_stristr(mname, "grenade") || Q_stristr(mname, "handgranate") || Q_stristr(mname, "mills"))) {
+                        bestDistSq = d2;
+                        VectorCopy(cent->lerpOrigin, bestPos);
+                        found = qtrue;
+                    }
+                }
+            }
+        }
+
+        if (found) {
+            VectorCopy(bestPos, cg.grenadeWarnPos);
+            cg.grenadeWarnDist = sqrtf(bestDistSq);
+            cg.grenadeWarnTime = cg.time;
+        }
+    }
 }
 
 void CG_GetOrigin(centity_t *cent, vec3_t origin)

@@ -94,6 +94,9 @@ varying float  var_FogFactor;
 #if defined(USE_SOFT_PARTICLES)
 varying float  var_ParticleDepth;
 #endif
+#if defined(USE_WET_BLOOD)
+varying vec3   var_WorldPos;
+#endif
 
 #if defined(USE_DEFORM_VERTEXES)
 vec3 DeformPosition(const vec3 pos, const vec3 normal, const vec2 st)
@@ -308,6 +311,9 @@ void main()
 	var_FogFactor = (gl_Position.w - u_FarplaneFogParams.x) * u_FarplaneFogParams.y;
 #if defined(USE_SOFT_PARTICLES)
 	var_ParticleDepth = gl_Position.w;
+#endif
+#if defined(USE_WET_BLOOD)
+	var_WorldPos = position;
 #endif
 
 #if defined(USE_TCGEN)

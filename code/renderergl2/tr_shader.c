@@ -3287,6 +3287,25 @@ static void CollapseStagesToLightall(shaderStage_t *diffuse,
 			}
 		}
 	}
+	else if (hasLightmap && !shader.isSky && !shader.isPortal && !(shader.contentFlags & CONTENTS_WATER)
+		&& (diffuse->bundle[TB_DIFFUSEMAP].image[0]))
+	{
+		// Fast-path Stage 2+3 HD Normal+Height+MicroAO map lookup (<stem>_nh) for USE_WORLD_NH
+		image_t *diffuseImg = diffuse->bundle[TB_DIFFUSEMAP].image[0];
+		char normalName[MAX_QPATH];
+		image_t *normalImg;
+		imgFlags_t normalFlags = (diffuseImg->flags & ~IMGFLAG_GENNORMALMAP) | IMGFLAG_NOLIGHTSCALE;
+
+		COM_StripExtension(diffuseImg->imgName, normalName, MAX_QPATH);
+		Q_strcat(normalName, MAX_QPATH, "_nh");
+		normalImg = R_FindImageFile(normalName, IMGTYPE_COLORALPHA, normalFlags);
+		if (normalImg)
+		{
+			diffuse->bundle[TB_NORMALMAP] = diffuse->bundle[0];
+			diffuse->bundle[TB_NORMALMAP].numImageAnimations = 0;
+			diffuse->bundle[TB_NORMALMAP].image[0] = normalImg;
+		}
+	}
 
 	if (r_specularMapping->integer)
 	{
@@ -4395,6 +4414,28 @@ static shader_t *FinishShader( void ) {
 			shader.modelMaterialMode = 0;
 			VectorSet4( shader.modelMaterial,  0.04f, 0.32f, 0.02f, 0.18f );
 			VectorSet4( shader.modelMaterial2, 3.50f, 3.00f, 0.40f, 0.90f );
+		}
+	}
+
+	// Optional HD Normal + Micro-AO map (<stem>_nh) for non-matte 3D models (weapons, vehicles, props)
+	if (shader.modelMaterialMode != 3 && !shader.isSky && !shader.isPortal
+		&& stages[0].active && stages[0].bundle[0].image[0]
+		&& !stages[0].bundle[TB_NORMALMAP].image[0]
+		&& stages[0].bundle[0].image[0]->imgName[0] != '*')
+	{
+		image_t *diffuseImg = stages[0].bundle[0].image[0];
+		char normalName[MAX_QPATH];
+		image_t *normalImg;
+		imgFlags_t normalFlags = (diffuseImg->flags & ~IMGFLAG_GENNORMALMAP) | IMGFLAG_NOLIGHTSCALE;
+
+		COM_StripExtension(diffuseImg->imgName, normalName, MAX_QPATH);
+		Q_strcat(normalName, MAX_QPATH, "_nh");
+		normalImg = R_FindImageFile(normalName, IMGTYPE_COLORALPHA, normalFlags);
+		if (normalImg)
+		{
+			stages[0].bundle[TB_NORMALMAP] = stages[0].bundle[0];
+			stages[0].bundle[TB_NORMALMAP].numImageAnimations = 0;
+			stages[0].bundle[TB_NORMALMAP].image[0] = normalImg;
 		}
 	}
 
@@ -5514,6 +5555,34 @@ static void CreateInternalShaders( void ) {
 	Q_strncpyz( shader.name, "<stencil shadow>", sizeof( shader.name ) );
 	shader.sort = SS_STENCIL_SHADOW;
 	tr.shadowShader = FinishShader();
+
+	// Procedural Remaster blood & gore shaders (zero external asset dependencies)
+	{
+		static const char *bloodShaderNames[5] = {
+			"remaster_blood_splat0",
+			"remaster_blood_splat1",
+			"remaster_blood_pool",
+			"remaster_blood_mist",
+			"remaster_gun_smoke"
+		};
+		int b;
+		for ( b = 0; b < 5; b++ ) {
+			if ( !tr.bloodImages[b] )
+				continue;
+			InitShader( bloodShaderNames[b], LIGHTMAP_2D );
+			shader.cullType = CT_TWO_SIDED;
+			shader.polygonOffset = (b < 3) ? qtrue : qfalse;
+			shader.isWetBlood = (b < 3) ? qtrue : qfalse;
+			shader.sort = (b < 3) ? SS_DECAL : SS_BLEND1;
+			stages[0].bundle[0].image[0] = tr.bloodImages[b];
+			stages[0].bundle[0].tcGen = TCGEN_TEXTURE;
+			stages[0].active = qtrue;
+			stages[0].rgbGen = CGEN_VERTEX;
+			stages[0].alphaGen = AGEN_VERTEX;
+			stages[0].stateBits = GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
+			FinishShader();
+		}
+	}
 }
 
 static void CreateExternalShaders( void ) {

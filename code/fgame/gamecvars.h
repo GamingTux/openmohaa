@@ -163,6 +163,8 @@ extern cvar_t *g_ai_notifyradius;
 extern cvar_t *g_ai_noticescale;
 extern cvar_t *g_ai_soundscale;
 extern cvar_t *g_aiFairness;
+extern cvar_t *g_autoHeal;
+extern cvar_t *g_sprint;
 extern cvar_t *ai_debug_grenades;
 
 extern cvar_t *g_warmup;

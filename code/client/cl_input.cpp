@@ -50,7 +50,9 @@ at the same time.
 
 kbutton_t	in_left, in_right, in_forward, in_back;
 kbutton_t	in_lookup, in_lookdown, in_moveleft, in_moveright;
-kbutton_t	in_strafe, in_speed;
+kbutton_t	in_strafe, in_speed, in_sprint;
+static int	s_lastForwardTapMs = 0;
+static qboolean s_doubleTapSprint = qfalse;
 
 qboolean	in_guimouse;
 
@@ -234,8 +236,22 @@ void IN_LeftDown(void) {IN_KeyDown(&in_left);}
 void IN_LeftUp(void) {IN_KeyUp(&in_left);}
 void IN_RightDown(void) {IN_KeyDown(&in_right);}
 void IN_RightUp(void) {IN_KeyUp(&in_right);}
-void IN_ForwardDown(void) {IN_KeyDown(&in_forward);}
-void IN_ForwardUp(void) {IN_KeyUp(&in_forward);}
+void IN_ForwardDown(void) {
+	if (!in_forward.active) {
+		int now = cls.realtime;
+		if (s_lastForwardTapMs > 0 && (now - s_lastForwardTapMs) <= 320 && (now - s_lastForwardTapMs) >= 30) {
+			s_doubleTapSprint = qtrue;
+		}
+		s_lastForwardTapMs = now;
+	}
+	IN_KeyDown(&in_forward);
+}
+void IN_ForwardUp(void) {
+	IN_KeyUp(&in_forward);
+	if (!in_forward.active) {
+		s_doubleTapSprint = qfalse;
+	}
+}
 void IN_BackDown(void) {IN_KeyDown(&in_back);}
 void IN_BackUp(void) {IN_KeyUp(&in_back);}
 void IN_LookupDown(void) {IN_KeyDown(&in_lookup);}
@@ -259,6 +275,8 @@ void IN_LeanRightUp(void) { IN_KeyUp(&in_buttons[5]); }
 
 void IN_SpeedDown(void) {IN_KeyDown(&in_speed);}
 void IN_SpeedUp(void) {IN_KeyUp(&in_speed);}
+void IN_SprintDown(void) {IN_KeyDown(&in_sprint);}
+void IN_SprintUp(void) {IN_KeyUp(&in_sprint);}
 void IN_StrafeDown(void) {IN_KeyDown(&in_strafe);}
 void IN_StrafeUp(void) {IN_KeyUp(&in_strafe);}
 
@@ -516,6 +534,10 @@ void CL_JoystickMove( usercmd_t *cmd ) {
 		cmd->buttons |= BUTTON_RUN;
 	}
 
+	if ( (in_sprint.active || (s_doubleTapSprint && in_forward.active)) && !(cmd->buttons & (BUTTON_ATTACKLEFT | BUTTON_ATTACKRIGHT)) ) {
+		cmd->buttons |= BUTTON_SPRINT;
+	}
+
 	if ( in_speed.active ) {
 		anglespeed = 0.001 * cls.frametime * cl_anglespeedkey->value;
 	} else {
@@ -681,6 +703,10 @@ void CL_CmdButtons( usercmd_t *cmd ) {
 	
 	if ( in_speed.active ^ cl_run->integer ) {
 		cmd->buttons |= BUTTON_RUN;
+	}
+
+	if ( (in_sprint.active || (s_doubleTapSprint && in_forward.active)) && !(cmd->buttons & (BUTTON_ATTACKLEFT | BUTTON_ATTACKRIGHT)) ) {
+		cmd->buttons |= BUTTON_SPRINT;
 	}
 
 	if (cge) {
@@ -1170,6 +1196,8 @@ void CL_InitInput( void ) {
 	Cmd_AddCommand("-leanright", IN_LeanRightUp);
 	Cmd_AddCommand("+speed", IN_SpeedDown);
 	Cmd_AddCommand("-speed", IN_SpeedUp);
+	Cmd_AddCommand("+sprint", IN_SprintDown);
+	Cmd_AddCommand("-sprint", IN_SprintUp);
 	Cmd_AddCommand("+button0", IN_Button0Down);
 	Cmd_AddCommand("-button0", IN_Button0Up);
 	Cmd_AddCommand("+button1", IN_Button1Down);
@@ -1245,6 +1273,8 @@ void CL_ShutdownInput(void)
 	Cmd_RemoveCommand("-moveright");
 	Cmd_RemoveCommand("+speed");
 	Cmd_RemoveCommand("-speed");
+	Cmd_RemoveCommand("+sprint");
+	Cmd_RemoveCommand("-sprint");
 	Cmd_RemoveCommand("+attack");
 	Cmd_RemoveCommand("-attack");
 	Cmd_RemoveCommand("+button0");

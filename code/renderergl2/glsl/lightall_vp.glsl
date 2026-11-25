@@ -108,7 +108,11 @@ varying vec4   var_LightDir;
 varying vec4   var_PrimaryLightDir;
 #endif
 
-#if defined(USE_WORLD_RELIEF)
+#if defined(USE_WORLD_NH)
+varying vec4   var_TanParallax;  // xy = tangent parallax step * distFade, z = grazing Fresnel * distFade, w = distFade
+varying vec3   var_TanLight;     // tangent-space base world light dir
+varying vec3   var_TanHalf;      // tangent-space Blinn-Phong half vector
+#elif defined(USE_WORLD_RELIEF)
 varying vec4   var_ReliefLight;  // xy = screen-space tangent light * distFade, z = base N·H, w = distFade
 varying vec3   var_ReliefHalf;   // xy = screen-space tangent half-vec * distFade, z = grazing Fresnel * distFade
 #endif
@@ -226,7 +230,7 @@ void main()
 #else
 	vec3 position  = attr_Position;
 	vec3 normal    = attr_Normal;
-  #if defined(USE_LIGHT) && !defined(USE_FAST_LIGHT)
+  #if (defined(USE_LIGHT) && !defined(USE_FAST_LIGHT)) || defined(USE_WORLD_NH)
 	vec3 tangent   = attr_Tangent.xyz;
   #endif
 #endif
@@ -278,7 +282,7 @@ void main()
 #if defined(USE_MODELMATRIX)
 	position  = (u_ModelMatrix * vec4(position, 1.0)).xyz;
 	normal    = (u_ModelMatrix * vec4(normal,   0.0)).xyz;
-  #if defined(USE_LIGHT) && !defined(USE_FAST_LIGHT)
+  #if (defined(USE_LIGHT) && !defined(USE_FAST_LIGHT)) || defined(USE_WORLD_NH)
 	tangent   = (u_ModelMatrix * vec4(tangent,  0.0)).xyz;
   #endif
 #endif
@@ -344,6 +348,29 @@ void main()
 	var_Normal    = vec4(normal,    viewDir.x);
 	var_Tangent   = vec4(tangent,   viewDir.y);
 	var_Bitangent = vec4(bitangent, viewDir.z);
+#elif defined(USE_WORLD_NH)
+	vec3 relN = (dot(normal, normal) > 1e-6) ? normalize(normal) : vec3(0.0, 0.0, 1.0);
+	vec3 orthoT = tangent - relN * dot(tangent, relN);
+	vec3 relT = (dot(orthoT, orthoT) > 1e-6) ? normalize(orthoT) : normalize(cross(relN, abs(relN.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+	vec3 relB = cross(relN, relT) * ((attr_Tangent.w < 0.0) ? -1.0 : 1.0);
+
+	float distFade = clamp(1.0 - max(gl_Position.w - 160.0, 0.0) * 0.0014, 0.0, 1.0);
+	float parFade  = clamp(1.0 - max(gl_Position.w - 85.0, 0.0) * 0.0022, 0.0, 1.0);
+
+	vec3 relV = normalize(u_ViewOrigin - position);
+	vec3 relL = u_WorldReliefLight.xyz;
+	vec3 relH = normalize(relL + relV);
+
+	float NdotV = max(dot(relN, relV), 0.0);
+	float oneMinusNV = 1.0 - NdotV;
+	float fresnel = oneMinusNV * oneMinusNV * oneMinusNV * distFade;
+
+	vec2 parVec = vec2(dot(relV, relT), dot(relV, relB)) / max(NdotV, 0.65);
+	// Taper parallax smoothly at grazing angles to keep walls crisp with zero swimming
+	float grazeMask = smoothstep(0.18, 0.62, NdotV);
+	var_TanParallax = vec4(parVec * (0.0055 * parFade * grazeMask * u_WorldReliefLight.w), fresnel, distFade);
+	var_TanLight    = vec3(dot(relL, relT), dot(relL, relB), max(dot(relL, relN), 0.05));
+	var_TanHalf     = vec3(dot(relH, relT), dot(relH, relB), max(dot(relH, relN), 0.0));
 #elif defined(USE_WORLD_RELIEF)
 	vec3 relN = (dot(normal, normal) > 1e-6) ? normalize(normal) : vec3(0.0, 0.0, 1.0);
 	float distFade = clamp(1.0 - max(gl_Position.w - 140.0, 0.0) * 0.0016, 0.0, 1.0);

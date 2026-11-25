@@ -2089,3 +2089,629 @@ int CG_PermanentUpdateTreadMark(
 
     return 0;
 }
+
+/*
+===============================================================================
+REMASTER REALISTIC BLOOD & GORE SYSTEM (cg_gore 0 / 1 / 2)
+Pure client-side procedural blood mist, gravity droplets, exit-wound wall
+splatters, and seeping ground pools (zero external assets, savegame-safe).
+===============================================================================
+*/
+
+#define MAX_GORE_PARTICLES 192
+
+typedef struct {
+    qboolean active;
+    qboolean isMist;
+    qboolean isWallDrip;
+    qboolean isGunSmoke;
+    qboolean isSpark;
+    qboolean canSplat;
+    int      startTime;
+    int      lifeTime;
+    vec3_t   pos;
+    vec3_t   vel;
+    float    startSize;
+    float    endSize;
+    float    alpha;
+    float    rotCos;
+    float    rotSin;
+    byte     rgb[3];
+} cgGoreParticle_t;
+
+static cgGoreParticle_t s_goreParticles[MAX_GORE_PARTICLES];
+static int              s_goreNextSlot   = 0;
+static int              s_goreLastTime   = 0;
+static unsigned int     s_goreRngState   = 0x5A17C391u;
+static vec3_t           s_gorePoolPos[4];
+static int              s_gorePoolTime[4];
+static int              s_gorePoolNext   = 0;
+
+static float CG_GoreRand01(void)
+{
+    s_goreRngState = s_goreRngState * 1664525u + 1013904223u;
+    return (float)((s_goreRngState >> 8) & 0xFFFFu) / 65535.0f;
+}
+
+static float CG_GoreRandSigned(void)
+{
+    return CG_GoreRand01() * 2.0f - 1.0f;
+}
+
+static cgGoreParticle_t *CG_AllocGoreParticle(void)
+{
+    cgGoreParticle_t *p = &s_goreParticles[s_goreNextSlot];
+    s_goreNextSlot = (s_goreNextSlot + 1) % MAX_GORE_PARTICLES;
+    memset(p, 0, sizeof(*p));
+    p->active = qtrue;
+    return p;
+}
+
+void CG_InitGore(void)
+{
+    memset(s_goreParticles, 0, sizeof(s_goreParticles));
+    memset(s_gorePoolPos, 0, sizeof(s_gorePoolPos));
+    memset(s_gorePoolTime, 0, sizeof(s_gorePoolTime));
+    s_goreNextSlot = 0;
+    s_goreLastTime = 0;
+    s_gorePoolNext = 0;
+}
+
+static void CG_PlaceBloodDecal(
+    qhandle_t    shader,
+    const vec3_t origin,
+    const vec3_t normal,
+    float        radius,
+    float        alpha,
+    qboolean     fadein
+)
+{
+    float angle;
+
+    if (!shader || radius <= 0.5f) {
+        return;
+    }
+
+    angle = 1.0f + CG_GoreRand01() * 358.0f;
+    CG_ImpactMark(
+        shader,
+        origin,
+        normal,
+        angle,
+        radius,
+        radius,
+        0.92f,
+        0.92f,
+        0.92f,
+        alpha,
+        qtrue,
+        qfalse,
+        qtrue,
+        fadein,
+        0.5f,
+        0.5f
+    );
+}
+
+void CG_SpawnBloodImpact(const vec3_t pos, const vec3_t norm, qboolean large)
+{
+    int      goreLevel;
+    float    intensity;
+    vec3_t   n, right, up, toCam;
+    vec3_t   vLight;
+    byte     litRgb[3];
+    float    camDist;
+    int      numMist, numDrops, i;
+    trace_t  tr;
+
+    if (!cg_gore || cg_gore->integer <= 0) {
+        return;
+    }
+
+    if (!cgs.media.bloodMistShader && !cgs.media.bloodSplatShaders[0]) {
+        return;
+    }
+
+    goreLevel = (cg_gore->integer >= 2) ? 2 : 1;
+    intensity = (goreLevel >= 2) ? 1.55f : 1.0f;
+    if (large) {
+        intensity *= 1.35f;
+    }
+
+    VectorCopy(norm, n);
+    if (VectorNormalize(n) < 0.001f) {
+        VectorSet(n, 0.0f, 0.0f, 1.0f);
+    }
+    PerpendicularVector(right, n);
+    CrossProduct(n, right, up);
+
+    // Sample local world lighting so blood stays grounded in shadows and rich in sunlight
+    cgi.R_GetLightingForDecal(vLight, n, pos);
+    for (i = 0; i < 3; i++) {
+        float c = vLight[i];
+        if (c < 72.0f) {
+            c = 72.0f;
+        } else if (c > 255.0f) {
+            c = 255.0f;
+        }
+        litRgb[i] = (byte)c;
+    }
+
+    VectorSubtract(pos, cg.refdef.vieworg, toCam);
+    camDist = VectorLength(toCam);
+
+    // 1. Expanding fine arterial blood mist puffs (skip directly inside camera eye)
+    if (cgs.media.bloodMistShader && camDist > 28.0f) {
+        numMist = large ? (goreLevel >= 2 ? 4 : 3) : (goreLevel >= 2 ? 3 : 2);
+        for (i = 0; i < numMist; i++) {
+            cgGoreParticle_t *p = CG_AllocGoreParticle();
+            float ang = CG_GoreRand01() * 6.2831853f;
+            float outSign = (i == 0) ? 1.0f : -1.0f; // entry + exit mist
+            float spd = (18.0f + CG_GoreRand01() * 34.0f) * intensity;
+
+            p->isMist    = qtrue;
+            p->canSplat  = qfalse;
+            p->startTime = cg.time;
+            p->lifeTime  = (int)((310.0f + CG_GoreRand01() * 190.0f) * (large ? 1.15f : 1.0f));
+
+            VectorMA(pos, outSign * (2.0f + CG_GoreRand01() * 4.0f), n, p->pos);
+            VectorMA(p->pos, CG_GoreRandSigned() * 3.0f, right, p->pos);
+            VectorMA(p->pos, CG_GoreRandSigned() * 3.0f, up, p->pos);
+
+            VectorScale(n, outSign * spd, p->vel);
+            VectorMA(p->vel, CG_GoreRandSigned() * 24.0f, right, p->vel);
+            VectorMA(p->vel, CG_GoreRandSigned() * 24.0f, up, p->vel);
+            p->vel[2] += 8.0f + CG_GoreRand01() * 18.0f;
+
+            p->startSize = (5.5f + CG_GoreRand01() * 3.5f) * (large ? 1.25f : 1.0f);
+            p->endSize   = (16.0f + CG_GoreRand01() * 10.0f) * intensity;
+            p->alpha     = large ? 0.72f : 0.60f;
+            p->rotCos    = cosf(ang);
+            p->rotSin    = sinf(ang);
+            p->rgb[0]    = litRgb[0];
+            p->rgb[1]    = litRgb[1];
+            p->rgb[2]    = litRgb[2];
+        }
+    }
+
+    // 2. Ballistic gravity-driven blood droplets (entry splash + exit spray)
+    if (cgs.media.bloodMistShader) {
+        numDrops = large ? (goreLevel >= 2 ? 16 : 11) : (goreLevel >= 2 ? 11 : 7);
+        for (i = 0; i < numDrops; i++) {
+            cgGoreParticle_t *p = CG_AllocGoreParticle();
+            float ang = CG_GoreRand01() * 6.2831853f;
+            qboolean exitSpray = (i % 3 != 0) ? qtrue : qfalse;
+            float dirSign = exitSpray ? -1.0f : 1.0f;
+            float fwdSpd  = (exitSpray ? (95.0f + CG_GoreRand01() * 155.0f) : (55.0f + CG_GoreRand01() * 105.0f)) * (large ? 1.20f : 1.0f);
+            float spread  = (28.0f + CG_GoreRand01() * 64.0f) * (large ? 1.15f : 1.0f);
+
+            p->isMist    = qfalse;
+            p->canSplat  = ((i & 1) == 0 && cgs.media.bloodSplatShaders[0] != 0) ? qtrue : qfalse;
+            p->startTime = cg.time;
+            p->lifeTime  = 450 + (int)(CG_GoreRand01() * 480.0f);
+
+            VectorMA(pos, dirSign * 2.5f, n, p->pos);
+            VectorScale(n, dirSign * fwdSpd, p->vel);
+            VectorMA(p->vel, cosf(ang) * spread, right, p->vel);
+            VectorMA(p->vel, sinf(ang) * spread, up, p->vel);
+            p->vel[2] += 26.0f + CG_GoreRand01() * 72.0f;
+
+            p->startSize = (2.1f + CG_GoreRand01() * 1.9f) * (large ? 1.20f : 1.0f);
+            p->endSize   = p->startSize * 0.72f;
+            p->alpha     = 0.90f;
+            p->rotCos    = cosf(ang);
+            p->rotSin    = sinf(ang);
+            p->rgb[0]    = litRgb[0];
+            p->rgb[1]    = litRgb[1];
+            p->rgb[2]    = litRgb[2];
+        }
+    }
+
+    // 3. Exit-wound wall/surface splatter behind struck soldier (world-only trace passes through victim)
+    if (cgs.media.bloodSplatShaders[0]) {
+        int numTraces = (large || goreLevel >= 2) ? 2 : 1;
+        for (i = 0; i < numTraces; i++) {
+            vec3_t start, end, rayDir;
+            float  traceDist = (i == 0) ? 124.0f : 96.0f;
+
+            VectorNegate(n, rayDir);
+            if (i > 0) {
+                VectorMA(rayDir, CG_GoreRandSigned() * 0.28f, right, rayDir);
+                VectorMA(rayDir, CG_GoreRandSigned() * 0.24f - 0.08f, up, rayDir);
+                VectorNormalize(rayDir);
+            }
+
+            VectorMA(pos, 2.0f, n, start);
+            VectorMA(start, traceDist, rayDir, end);
+
+            CG_Trace(&tr, start, vec3_origin, vec3_origin, end, 0, MASK_SOLID, qfalse, qfalse, "CG_GoreWallSplat");
+            if (tr.fraction < 1.0f && tr.fraction > 0.01f && !tr.startsolid && !(tr.surfaceFlags & SURF_SKY)) {
+                float proxBoost = 1.0f + (1.0f - tr.fraction) * 0.45f;
+                float radius = ((i == 0) ? (10.5f + CG_GoreRand01() * 6.5f) : (6.5f + CG_GoreRand01() * 4.5f)) * proxBoost * (goreLevel >= 2 ? 1.28f : 1.0f);
+                qhandle_t splatShader = cgs.media.bloodSplatShaders[(s_goreRngState >> 4) & 1];
+                if (large) {
+                    radius *= 1.22f;
+                }
+                CG_PlaceBloodDecal(splatShader, tr.endpos, tr.plane.normal, radius, 0.90f, qfalse);
+
+                // Liquid gravity run-down on vertical walls: subtle downward drip streak + slow trickling bead
+                if (fabsf(tr.plane.normal[2]) < 0.35f) {
+                    vec3_t dripPos;
+                    VectorCopy(tr.endpos, dripPos);
+                    dripPos[2] -= radius * 0.58f;
+                    CG_ImpactMark(
+                        cgs.media.bloodPoolShader ? cgs.media.bloodPoolShader : splatShader,
+                        dripPos,
+                        tr.plane.normal,
+                        0.0f,
+                        radius * 0.24f,
+                        radius * 1.15f,
+                        0.90f,
+                        0.90f,
+                        0.90f,
+                        0.84f,
+                        qtrue,
+                        qfalse,
+                        qtrue,
+                        qtrue,
+                        0.5f,
+                        0.5f
+                    );
+
+                    if (cgs.media.bloodMistShader) {
+                        int d;
+                        int numDrips = (large || goreLevel >= 2) ? 2 : 1;
+                        for (d = 0; d < numDrips; d++) {
+                            cgGoreParticle_t *dp = CG_AllocGoreParticle();
+                            dp->isMist     = qfalse;
+                            dp->isWallDrip = qtrue;
+                            dp->canSplat   = qfalse;
+                            dp->startTime  = cg.time;
+                            dp->lifeTime   = 900 + (int)(CG_GoreRand01() * 650.0f);
+                            VectorMA(tr.endpos, 0.8f, tr.plane.normal, dp->pos);
+                            dp->pos[0]    += CG_GoreRandSigned() * (radius * 0.25f);
+                            dp->pos[1]    += CG_GoreRandSigned() * (radius * 0.25f);
+                            dp->pos[2]    -= CG_GoreRand01() * (radius * 0.35f);
+                            VectorSet(dp->vel, 0.0f, 0.0f, -(11.0f + CG_GoreRand01() * 14.0f));
+                            dp->startSize  = 1.6f + CG_GoreRand01() * 1.0f;
+                            dp->endSize    = 0.9f;
+                            dp->alpha      = 0.88f;
+                            dp->rotCos     = 1.0f;
+                            dp->rotSin     = 0.0f;
+                            dp->rgb[0]     = litRgb[0];
+                            dp->rgb[1]     = litRgb[1];
+                            dp->rgb[2]     = litRgb[2];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Seeping ground blood pool beneath struck/fallen soldier (rate-limited per spot)
+    if (cgs.media.bloodPoolShader) {
+        vec3_t downEnd;
+        VectorCopy(pos, downEnd);
+        downEnd[0] += CG_GoreRandSigned() * 8.0f;
+        downEnd[1] += CG_GoreRandSigned() * 8.0f;
+        downEnd[2] -= 86.0f;
+
+        CG_Trace(&tr, pos, vec3_origin, vec3_origin, downEnd, 0, MASK_SOLID, qfalse, qfalse, "CG_GoreFloorPool");
+        if (tr.fraction < 1.0f && !tr.startsolid && tr.plane.normal[2] > 0.65f && !(tr.surfaceFlags & SURF_SKY)) {
+            qboolean tooRecent = qfalse;
+            for (i = 0; i < 4; i++) {
+                if (s_gorePoolTime[i] > 0 && (cg.time - s_gorePoolTime[i]) < 550) {
+                    vec3_t d;
+                    VectorSubtract(tr.endpos, s_gorePoolPos[i], d);
+                    if (DotProduct(d, d) < (18.0f * 18.0f)) {
+                        tooRecent = qtrue;
+                        break;
+                    }
+                }
+            }
+
+            if (!tooRecent) {
+                float poolRadius = (large ? (15.0f + CG_GoreRand01() * 7.0f) : (10.5f + CG_GoreRand01() * 5.5f))
+                                   * (goreLevel >= 2 ? 1.30f : 1.0f);
+                VectorCopy(tr.endpos, s_gorePoolPos[s_gorePoolNext]);
+                s_gorePoolTime[s_gorePoolNext] = cg.time;
+                s_gorePoolNext = (s_gorePoolNext + 1) & 3;
+
+                CG_PlaceBloodDecal(cgs.media.bloodPoolShader, tr.endpos, tr.plane.normal, poolRadius, 0.88f, qtrue);
+            }
+        }
+    }
+}
+
+void CG_SpawnGunSmoke(const vec3_t pos, const vec3_t vel, float heatFrac)
+{
+    cgGoreParticle_t *p;
+    float             ang;
+    vec3_t            vLight;
+    int               i;
+
+    if (!cg_gunSmoke || cg_gunSmoke->integer <= 0 || !cgs.media.gunSmokeShader) {
+        return;
+    }
+
+    p            = CG_AllocGoreParticle();
+    ang          = CG_GoreRand01() * 6.2831853f;
+    p->isMist    = qtrue;
+    p->isGunSmoke = qtrue;
+    p->canSplat  = qfalse;
+    p->startTime = cg.time;
+    p->lifeTime  = 520 + (int)(CG_GoreRand01() * 340.0f);
+
+    VectorCopy(pos, p->pos);
+    VectorCopy(vel, p->vel);
+    p->vel[0] += CG_GoreRandSigned() * 5.0f;
+    p->vel[1] += CG_GoreRandSigned() * 5.0f;
+    p->vel[2] += 13.0f + CG_GoreRand01() * 9.0f;
+
+    p->startSize = 1.6f + heatFrac * 0.9f;
+    p->endSize   = 6.8f + heatFrac * 4.5f;
+    p->alpha     = 0.14f + Com_Clamp(0.0f, 0.16f, heatFrac * 0.15f);
+    p->rotCos    = cosf(ang);
+    p->rotSin    = sinf(ang);
+
+    cgi.R_GetLightingForDecal(vLight, vec_upwards, pos);
+    for (i = 0; i < 3; i++) {
+        float c = vLight[i];
+        if (c < 95.0f) c = 95.0f;
+        else if (c > 240.0f) c = 240.0f;
+        p->rgb[i] = (byte)c;
+    }
+}
+
+void CG_SpawnImpactSparks(const vec3_t pos, const vec3_t norm, qboolean metallic, qboolean large)
+{
+    vec3_t n, right, up;
+    int    count, i;
+
+    if (!cg_impactSparks || cg_impactSparks->integer <= 0 || !cgs.media.gunSmokeShader) {
+        return;
+    }
+
+    VectorCopy(norm, n);
+    if (VectorNormalize(n) < 0.001f) {
+        VectorSet(n, 0.0f, 0.0f, 1.0f);
+    }
+    PerpendicularVector(right, n);
+    CrossProduct(n, right, up);
+
+    count = metallic ? (large ? 14 : 9) : (large ? 8 : 5);
+    for (i = 0; i < count; i++) {
+        cgGoreParticle_t *p = CG_AllocGoreParticle();
+        float ang    = CG_GoreRand01() * 6.2831853f;
+        float fwdSpd = (120.0f + CG_GoreRand01() * (metallic ? 240.0f : 150.0f)) * (large ? 1.2f : 1.0f);
+        float spread = (45.0f + CG_GoreRand01() * 145.0f);
+
+        p->isMist    = qfalse;
+        p->isSpark   = qtrue;
+        p->canSplat  = qfalse;
+        p->startTime = cg.time;
+        p->lifeTime  = 180 + (int)(CG_GoreRand01() * (metallic ? 360.0f : 230.0f));
+
+        VectorMA(pos, 1.5f, n, p->pos);
+        VectorScale(n, fwdSpd, p->vel);
+        VectorMA(p->vel, cosf(ang) * spread, right, p->vel);
+        VectorMA(p->vel, sinf(ang) * spread, up, p->vel);
+        p->vel[2] += 35.0f + CG_GoreRand01() * 85.0f;
+
+        p->startSize = metallic ? (1.4f + CG_GoreRand01() * 1.1f) : (1.1f + CG_GoreRand01() * 0.8f);
+        p->endSize   = 0.45f;
+        p->alpha     = 0.96f;
+        p->rotCos    = 1.0f;
+        p->rotSin    = 0.0f;
+        p->rgb[0]    = 255;
+        p->rgb[1]    = (byte)(metallic ? (185 + (int)(CG_GoreRand01() * 60.0f)) : (145 + (int)(CG_GoreRand01() * 55.0f)));
+        p->rgb[2]    = (byte)(metallic ? (75 + (int)(CG_GoreRand01() * 65.0f)) : 40);
+    }
+}
+
+void CG_AddGoreParticles(void)
+{
+    int        i;
+    float      dt;
+    vec3_t     camLeft, camUp;
+    polyVert_t verts[4];
+
+    if ((!cg_gore || cg_gore->integer <= 0)
+        && (!cg_gunSmoke || cg_gunSmoke->integer <= 0)
+        && (!cg_impactSparks || cg_impactSparks->integer <= 0)) {
+        s_goreLastTime = cg.time;
+        return;
+    }
+    if (!cgs.media.bloodMistShader && !cgs.media.gunSmokeShader) {
+        s_goreLastTime = cg.time;
+        return;
+    }
+
+    if (s_goreLastTime <= 0 || cg.time < s_goreLastTime) {
+        dt = 0.0f;
+    } else {
+        dt = (float)(cg.time - s_goreLastTime) * 0.001f;
+        if (dt > 0.05f) {
+            dt = 0.05f;
+        }
+    }
+    s_goreLastTime = cg.time;
+
+    VectorCopy(cg.refdef.viewaxis[1], camLeft);
+    VectorCopy(cg.refdef.viewaxis[2], camUp);
+
+    for (i = 0; i < MAX_GORE_PARTICLES; i++) {
+        cgGoreParticle_t *p = &s_goreParticles[i];
+        float             frac, size, alpha;
+        vec3_t            axisR, axisU;
+        byte              aByte;
+
+        if (!p->active) {
+            continue;
+        }
+
+        if (cg.time < p->startTime || (cg.time - p->startTime) >= p->lifeTime) {
+            p->active = qfalse;
+            continue;
+        }
+
+        frac = (float)(cg.time - p->startTime) / (float)p->lifeTime;
+
+        if (dt > 0.0f) {
+            if (p->isGunSmoke) {
+                float drag = 1.0f - 2.4f * dt;
+                if (drag < 0.4f) {
+                    drag = 0.4f;
+                }
+                VectorScale(p->vel, drag, p->vel);
+                p->vel[2] += 14.0f * dt;
+                VectorMA(p->pos, dt, p->vel, p->pos);
+            } else if (p->isMist) {
+                float drag = 1.0f - 4.2f * dt;
+                if (drag < 0.25f) {
+                    drag = 0.25f;
+                }
+                VectorScale(p->vel, drag, p->vel);
+                p->vel[2] -= 42.0f * dt;
+                VectorMA(p->pos, dt, p->vel, p->pos);
+            } else if (p->isSpark) {
+                vec3_t prevPos;
+                VectorCopy(p->pos, prevPos);
+                p->vel[2] -= 740.0f * dt;
+                VectorScale(p->vel, 1.0f - 0.35f * dt, p->vel);
+                VectorMA(p->pos, dt, p->vel, p->pos);
+                // Cool spark color from white-gold to glowing amber-orange
+                if (p->rgb[1] > 70) {
+                    p->rgb[1] = (byte)(p->rgb[1] > (int)(260.0f * dt) ? p->rgb[1] - (int)(260.0f * dt) : 70);
+                }
+                if (p->rgb[2] > 15) {
+                    p->rgb[2] = (byte)(p->rgb[2] > (int)(240.0f * dt) ? p->rgb[2] - (int)(240.0f * dt) : 15);
+                }
+                if ((i & 1) == 0) {
+                    trace_t tr;
+                    CG_Trace(&tr, prevPos, vec3_origin, vec3_origin, p->pos, 0, MASK_SOLID, qfalse, qfalse, "CG_SparkBounce");
+                    if (tr.fraction < 1.0f && !tr.startsolid) {
+                        float vn = DotProduct(p->vel, tr.plane.normal);
+                        VectorCopy(tr.endpos, p->pos);
+                        VectorMA(p->vel, -1.55f * vn, tr.plane.normal, p->vel);
+                        VectorScale(p->vel, 0.58f, p->vel);
+                    }
+                }
+            } else if (p->isWallDrip) {
+                // Slow viscous trickle straight down vertical wall
+                p->vel[2] *= (1.0f - 0.55f * dt);
+                VectorMA(p->pos, dt, p->vel, p->pos);
+            } else {
+                vec3_t prevPos;
+                float  drag = 1.0f - 0.65f * dt;
+                VectorCopy(p->pos, prevPos);
+                if (drag < 0.5f) {
+                    drag = 0.5f;
+                }
+                VectorScale(p->vel, drag, p->vel);
+                p->vel[2] -= 660.0f * dt;
+                VectorMA(p->pos, dt, p->vel, p->pos);
+
+                if (p->canSplat) {
+                    trace_t tr;
+                    CG_Trace(&tr, prevPos, vec3_origin, vec3_origin, p->pos, 0, MASK_SOLID, qfalse, qfalse, "CG_GoreDropSplat");
+                    if (tr.fraction < 1.0f) {
+                        if (!tr.startsolid && !(tr.surfaceFlags & SURF_SKY) && cgs.media.bloodSplatShaders[0]) {
+                            float dropRadius = (4.8f + CG_GoreRand01() * 4.2f) * ((cg_gore->integer >= 2) ? 1.25f : 1.0f);
+                            CG_PlaceBloodDecal(
+                                cgs.media.bloodSplatShaders[i & 1],
+                                tr.endpos,
+                                tr.plane.normal,
+                                dropRadius,
+                                0.86f,
+                                qfalse
+                            );
+                        }
+                        p->active = qfalse;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        size = p->startSize + (p->endSize - p->startSize) * frac;
+        if (p->isMist) {
+            float fade = (1.0f - frac);
+            alpha = p->alpha * fade * fade;
+            // Rotated camera-facing billboard
+            axisR[0] = (camLeft[0] * p->rotCos + camUp[0] * p->rotSin) * size;
+            axisR[1] = (camLeft[1] * p->rotCos + camUp[1] * p->rotSin) * size;
+            axisR[2] = (camLeft[2] * p->rotCos + camUp[2] * p->rotSin) * size;
+
+            axisU[0] = (-camLeft[0] * p->rotSin + camUp[0] * p->rotCos) * size;
+            axisU[1] = (-camLeft[1] * p->rotSin + camUp[1] * p->rotCos) * size;
+            axisU[2] = (-camLeft[2] * p->rotSin + camUp[2] * p->rotCos) * size;
+        } else {
+            float vx = DotProduct(p->vel, camLeft);
+            float vy = DotProduct(p->vel, camUp);
+            float vLen = sqrtf(vx * vx + vy * vy);
+            float c, s, stretch;
+            alpha = p->alpha * (1.0f - frac * frac);
+
+            if (vLen > 20.0f) {
+                c = vx / vLen;
+                s = vy / vLen;
+                stretch = p->isSpark ? (1.6f + Com_Clamp(0.0f, 2.2f, vLen / 170.0f)) : (1.0f + Com_Clamp(0.0f, 0.85f, vLen / 260.0f));
+            } else {
+                c = p->rotCos;
+                s = p->rotSin;
+                stretch = 1.0f;
+            }
+
+            axisR[0] = (camLeft[0] * c + camUp[0] * s) * (size * stretch);
+            axisR[1] = (camLeft[1] * c + camUp[1] * s) * (size * stretch);
+            axisR[2] = (camLeft[2] * c + camUp[2] * s) * (size * stretch);
+
+            axisU[0] = (-camLeft[0] * s + camUp[0] * c) * (size * (p->isSpark ? 0.42f : 0.78f));
+            axisU[1] = (-camLeft[1] * s + camUp[1] * c) * (size * (p->isSpark ? 0.42f : 0.78f));
+            axisU[2] = (-camLeft[2] * s + camUp[2] * c) * (size * (p->isSpark ? 0.42f : 0.78f));
+        }
+
+        if (alpha <= 0.01f) {
+            continue;
+        }
+
+        aByte = (byte)(Com_Clamp(0.0f, 1.0f, alpha) * 255.0f);
+
+        verts[0].xyz[0] = p->pos[0] - axisR[0] - axisU[0];
+        verts[0].xyz[1] = p->pos[1] - axisR[1] - axisU[1];
+        verts[0].xyz[2] = p->pos[2] - axisR[2] - axisU[2];
+        verts[0].st[0]  = 0.0f;
+        verts[0].st[1]  = 0.0f;
+
+        verts[1].xyz[0] = p->pos[0] + axisR[0] - axisU[0];
+        verts[1].xyz[1] = p->pos[1] + axisR[1] - axisU[1];
+        verts[1].xyz[2] = p->pos[2] + axisR[2] - axisU[2];
+        verts[1].st[0]  = 1.0f;
+        verts[1].st[1]  = 0.0f;
+
+        verts[2].xyz[0] = p->pos[0] + axisR[0] + axisU[0];
+        verts[2].xyz[1] = p->pos[1] + axisR[1] + axisU[1];
+        verts[2].xyz[2] = p->pos[2] + axisR[2] + axisU[2];
+        verts[2].st[0]  = 1.0f;
+        verts[2].st[1]  = 1.0f;
+
+        verts[3].xyz[0] = p->pos[0] - axisR[0] + axisU[0];
+        verts[3].xyz[1] = p->pos[1] - axisR[1] + axisU[1];
+        verts[3].xyz[2] = p->pos[2] - axisR[2] + axisU[2];
+        verts[3].st[0]  = 0.0f;
+        verts[3].st[1]  = 1.0f;
+
+        verts[0].modulate[0] = verts[1].modulate[0] = verts[2].modulate[0] = verts[3].modulate[0] = p->rgb[0];
+        verts[0].modulate[1] = verts[1].modulate[1] = verts[2].modulate[1] = verts[3].modulate[1] = p->rgb[1];
+        verts[0].modulate[2] = verts[1].modulate[2] = verts[2].modulate[2] = verts[3].modulate[2] = p->rgb[2];
+        verts[0].modulate[3] = verts[1].modulate[3] = verts[2].modulate[3] = verts[3].modulate[3] = aByte;
+
+        {
+            qhandle_t hPartShader = (p->isGunSmoke || p->isSpark) ? cgs.media.gunSmokeShader : cgs.media.bloodMistShader;
+            if (hPartShader) {
+                cgi.R_AddPolyToScene(hPartShader, 4, verts, 0);
+            }
+        }
+    }
+}

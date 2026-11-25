@@ -21,16 +21,30 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 */
 // tr_shade.c
 
-#include "tr_local.h" 
-#include <time.h>
+#include "tr_local.h"
 
 static void RB_SetWindUniform( shaderProgram_t *sp );
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static int64_t R_ShadeNowUsec( void ) {
+	static LARGE_INTEGER s_freq;
+	LARGE_INTEGER now;
+	if ( !s_freq.QuadPart ) {
+		QueryPerformanceFrequency( &s_freq );
+	}
+	QueryPerformanceCounter( &now );
+	return s_freq.QuadPart ? (int64_t)( ( now.QuadPart * 1000000LL ) / s_freq.QuadPart ) : 0;
+}
+#else
+#include <time.h>
 static int64_t R_ShadeNowUsec( void ) {
 	struct timespec ts;
 	clock_gettime( CLOCK_MONOTONIC, &ts );
 	return (int64_t)ts.tv_sec * 1000000LL + (int64_t)( ts.tv_nsec / 1000 );
 }
+#endif
 
 /*
 
@@ -902,7 +916,39 @@ static void RB_SetupWorldReliefUniforms( shaderProgram_t *sp, const shaderStage_
 	VectorNormalize( lightDir );
 
 	VectorSet4( reliefLight,  lightDir[0], lightDir[1], lightDir[2], tess.shader->worldRelief[0] * modeScale );
-	VectorSet4( reliefParams, tess.shader->worldRelief[1] * modeScale, tess.shader->worldFresnel * modeScale, tess.shader->worldRelief[2], tess.shader->worldRelief[3] );
+	{
+		float wet = 0.0f;
+		if ( r_weatherWetness && r_weatherWetness->integer > 0 && tr.world && tr.world->baseName[0] ) {
+			const char *m = tr.world->baseName;
+			if ( !Q_stricmpn( m, "m3l1", 4 ) ) {
+				wet = 0.65f; // Omaha Beach coastal spray
+			} else if ( !Q_stricmpn( m, "m2", 2 ) ) {
+				wet = 0.52f; // Norway / Trondheim damp stone & steel
+			} else if ( !Q_stricmpn( m, "m5", 2 ) || Q_stristr( m, "mohdm5" ) ) {
+				wet = 0.38f; // Winter frost & wet slush
+			} else if ( !Q_stricmpn( m, "m3", 2 ) || !Q_stricmpn( m, "m4", 2 ) || !Q_stricmpn( m, "m6", 2 )
+				|| Q_stristr( m, "mohdm3" ) || Q_stristr( m, "mohdm7" ) ) {
+				wet = 0.28f; // Damp overcast European countryside/towns
+			} else if ( Q_stricmpn( m, "m1", 2 ) != 0 ) {
+				wet = 0.16f;
+			}
+			if ( r_weatherWetness->integer >= 2 ) {
+				wet *= 1.45f;
+			}
+		}
+		// Keep dry sand/desert at 0, subtly boost glossy spec & grazing Fresnel on wet stone/wood/metal
+		{
+			float specVal = tess.shader->worldRelief[1] * modeScale;
+			float fresVal = tess.shader->worldFresnel * modeScale;
+			float shinVal = tess.shader->worldRelief[2];
+			if ( wet > 0.001f && tess.shader->worldRelief[0] > 0.01f ) {
+				specVal = specVal * ( 1.0f + wet * 0.45f ) + wet * 0.06f;
+				fresVal = fresVal * ( 1.0f + wet * 0.55f ) + wet * 0.045f;
+				shinVal = shinVal * ( 1.0f + wet * 0.30f );
+			}
+			VectorSet4( reliefParams, specVal, fresVal, shinVal, tess.shader->worldRelief[3] );
+		}
+	}
 
 	GLSL_SetUniformVec3( sp, UNIFORM_WORLDRELIEFRIGHT,  worldRight );
 	GLSL_SetUniformVec3( sp, UNIFORM_WORLDRELIEFUP,     worldUp );
@@ -2326,6 +2372,7 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		qboolean useModelPerPixel = qfalse;
 		qboolean useModernWater = qfalse;
 		qboolean useSoftParticles = qfalse;
+		qboolean useWetBlood = qfalse;
 		image_t *softDepthImg = NULL;
 
 		if ( !pStage )
@@ -2426,6 +2473,14 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 				index |= MODELDEF_USE_SUN_SHADOW;
 			}
 
+			if ( ( index & MODELDEF_USE_SPECULAR )
+				&& r_worldParallax && r_worldParallax->integer > 0
+				&& pStage->bundle[TB_NORMALMAP].image[0]
+				&& tr.modelLightShader[index | MODELDEF_USE_NORMALMAP].program )
+			{
+				index |= MODELDEF_USE_NORMALMAP;
+			}
+
 			sp = &tr.modelLightShader[index];
 			backEnd.pc.c_lightallDraws++;
 		}
@@ -2497,13 +2552,29 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 				index |= LIGHTDEF_USE_PISUNSHADOW;
 			}
 
+			if (!(r_normalMapping->integer || r_specularMapping->integer)
+				&& r_worldMicroRelief && r_worldMicroRelief->integer > 0
+				&& r_worldParallax && r_worldParallax->integer > 0
+				&& pStage->bundle[TB_NORMALMAP].image[0]
+				&& ((index & LIGHTDEF_LIGHTTYPE_MASK) == LIGHTDEF_USE_LIGHTMAP)
+				&& !(index & (LIGHTDEF_ENTITY_VERTEX_ANIMATION | LIGHTDEF_ENTITY_BONE_ANIMATION | LIGHTDEF_USE_SHADOWMAP))
+				&& pStage->glslShaderGroup[index | LIGHTDEF_USE_PARALLAXMAP].program)
+			{
+				index |= LIGHTDEF_USE_PARALLAXMAP;
+			}
+
 			sp = &pStage->glslShaderGroup[index];
 
 			backEnd.pc.c_lightallDraws++;
 		}
 		else
 		{
-			if ( RB_UseSoftParticles( pStage ) )
+			if ( tess.shader->isWetBlood && tr.wetBloodShader.program && !backEnd.projection2D && !backEnd.depthFill )
+			{
+				useWetBlood = qtrue;
+				sp = &tr.wetBloodShader;
+			}
+			else if ( RB_UseSoftParticles( pStage ) )
 			{
 				softDepthImg = RB_EnsureSoftParticleDepth();
 				if ( softDepthImg )
@@ -2624,6 +2695,23 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		{
 			RB_SetupWaterUniforms(sp);
 		}
+		else if (useWetBlood)
+		{
+			vec4_t wetSun;
+			const float *sunDir = s_sun.exists ? s_sun.direction : tr.sunDirection;
+			VectorCopy(sunDir, wetSun);
+			if (VectorNormalize(wetSun) < 0.01f)
+			{
+				VectorSet(wetSun, 0.36f, 0.28f, 0.89f);
+			}
+			else if (wetSun[2] < 0.25f)
+			{
+				wetSun[2] = 0.45f;
+				VectorNormalize(wetSun);
+			}
+			wetSun[3] = 0.0f;
+			GLSL_SetUniformVec4(sp, UNIFORM_SUNSHADOWDIR, wetSun);
+		}
 		if (useSoftParticles)
 		{
 			RB_SetupSoftParticleUniforms(sp, pStage, softDepthImg);
@@ -2736,6 +2824,18 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 				mat2[1] = tess.shader->modelMaterial2[1];
 				mat2[2] = tess.shader->modelMaterial2[2];
 				mat2[3] = tess.shader->modelMaterial2[3] * boost;
+				if ( r_weatherWetness && r_weatherWetness->integer > 0 && tess.shader->modelMaterialMode != 3
+					&& tr.world && tr.world->baseName[0] && Q_stricmpn( tr.world->baseName, "m1", 2 ) != 0 )
+				{
+					const char *m = tr.world->baseName;
+					float wet = ( !Q_stricmpn( m, "m3l1", 4 ) || !Q_stricmpn( m, "m2", 2 ) ) ? 0.50f : 0.25f;
+					if ( r_weatherWetness->integer >= 2 ) wet *= 1.4f;
+					mat[0] += wet * 0.08f;
+					mat[1] += wet * 0.14f;
+					mat[2] += wet * 0.06f;
+					mat[3] += wet * 0.10f;
+					mat2[0] *= ( 1.0f + wet * 0.22f );
+				}
 				GLSL_SetUniformVec4( sp, UNIFORM_MODELMATERIAL, mat );
 				GLSL_SetUniformVec4( sp, UNIFORM_MODELMATERIAL2, mat2 );
 			}
@@ -2930,6 +3030,9 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 			else
 				GL_BindToTMU( tr.whiteImage, TB_DIFFUSEMAP );
 
+			if ( pStage->bundle[TB_NORMALMAP].image[0] && r_worldParallax && r_worldParallax->integer > 0 )
+				R_BindAnimatedImageToTMU( &pStage->bundle[TB_NORMALMAP], TB_NORMALMAP );
+
 			RB_SetupSunShadowUniforms( sp, pStage, qtrue );
 		}
 		else if ( useModernWater )
@@ -3035,6 +3138,12 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 					}
 					else if (r_specularMapping->integer)
 						GL_BindToTMU( tr.whiteImage, TB_SPECULARMAP );
+				}
+				else if (light && fastLight && pStage->bundle[TB_NORMALMAP].image[0]
+					&& r_worldMicroRelief && r_worldMicroRelief->integer > 0
+					&& r_worldParallax && r_worldParallax->integer > 0)
+				{
+					R_BindAnimatedImageToTMU( &pStage->bundle[TB_NORMALMAP], TB_NORMALMAP);
 				}
 
 				enableTextures[3] = (r_cubeMapping->integer && !(tr.viewParms.flags & VPF_NOCUBEMAPS) && input->cubemapIndex) ? 1.0f : 0.0f;

@@ -257,6 +257,7 @@ cvar_t *r_drawspherelights;
 cvar_t *r_modelPerPixelLighting;
 cvar_t *r_modernWater;
 cvar_t *r_worldMicroRelief;
+cvar_t *r_worldParallax;
 cvar_t *r_bloom;
 cvar_t *r_filmicTonemap;
 cvar_t *r_renderScale;
@@ -272,6 +273,10 @@ cvar_t *r_extendedLod;
 cvar_t *r_foliageWind;
 cvar_t *r_emissiveGlow;
 cvar_t *r_mapAtmosphere;
+cvar_t *r_motionBlur;
+cvar_t *r_weatherWetness;
+cvar_t *r_sunShafts;
+cvar_t *r_underwaterFx;
 
 cvar_t *r_numdebuglines;
 cvar_t *r_stipplelines;
@@ -1600,6 +1605,7 @@ void R_Register( void )
     r_modelPerPixelLighting = ri.Cvar_Get("r_modelPerPixelLighting", "1", CVAR_ARCHIVE);
     r_modernWater = ri.Cvar_Get("r_modernWater", "1", CVAR_ARCHIVE);
     r_worldMicroRelief = ri.Cvar_Get("r_worldMicroRelief", "1", CVAR_ARCHIVE);
+    r_worldParallax = ri.Cvar_Get("r_worldParallax", "1", CVAR_ARCHIVE);
     r_bloom = ri.Cvar_Get("r_bloom", "1", CVAR_ARCHIVE);
     r_filmicTonemap = ri.Cvar_Get("r_filmicTonemap", "1", CVAR_ARCHIVE);
     r_renderScale = ri.Cvar_Get("r_renderScale", "1.0", CVAR_ARCHIVE);
@@ -1615,6 +1621,10 @@ void R_Register( void )
     r_foliageWind = ri.Cvar_Get("r_foliageWind", "1", CVAR_ARCHIVE);
     r_emissiveGlow = ri.Cvar_Get("r_emissiveGlow", "1", CVAR_ARCHIVE);
     r_mapAtmosphere = ri.Cvar_Get("r_mapAtmosphere", "1", CVAR_ARCHIVE);
+    r_motionBlur = ri.Cvar_Get("r_motionBlur", "1", CVAR_ARCHIVE);
+    r_weatherWetness = ri.Cvar_Get("r_weatherWetness", "1", CVAR_ARCHIVE);
+    r_sunShafts = ri.Cvar_Get("r_sunShafts", "1", CVAR_ARCHIVE);
+    r_underwaterFx = ri.Cvar_Get("r_underwaterFx", "1", CVAR_ARCHIVE);
 
     r_debuglines_depthmask = ri.Cvar_Get("r_debuglines_depthmask", "0", CVAR_ARCHIVE);
     r_stipplelines = ri.Cvar_Get("r_stipplelines", "1", CVAR_ARCHIVE);

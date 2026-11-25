@@ -220,6 +220,8 @@ static uniformInfo_t uniformsInfo[] =
 	{ "u_PostFxBounds",       GLSL_VEC4 },
 	{ "u_PostFxSharpen",      GLSL_VEC2 },
 	{ "u_ColorGrade",         GLSL_VEC4 },
+	{ "u_MotionBlur",         GLSL_VEC4 },
+	{ "u_SunShafts",          GLSL_VEC4 },
 	{ "u_WindParams",         GLSL_VEC4 }
 };
 
@@ -1264,6 +1266,21 @@ void GLSL_InitGPUShaders(void)
 		numEtcShaders++;
 	}
 
+	{
+		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_NORMAL | ATTR_COLOR;
+		if (GLSL_InitGPUShader(&tr.wetBloodShader, "generic", attribs, qtrue, "#define USE_WET_BLOOD\n", qtrue, fallbackShader_generic_vp, fallbackShader_generic_fp))
+		{
+			GLSL_InitUniforms(&tr.wetBloodShader);
+			GLSL_SetUniformInt(&tr.wetBloodShader, UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
+			GLSL_FinishGPUShader(&tr.wetBloodShader);
+			numEtcShaders++;
+		}
+		else
+		{
+			Com_Memset(&tr.wetBloodShader, 0, sizeof(tr.wetBloodShader));
+		}
+	}
+
 
 	for (i = 0; i < LIGHTDEF_COUNT; i++)
 	{
@@ -1273,7 +1290,10 @@ void GLSL_InitGPUShaders(void)
 			&& (glRefConfig.glslMajorVersion > 1 || (glRefConfig.glslMajorVersion == 1 && glRefConfig.glslMinorVersion >= 10) || glRefConfig.shadowSamplers);
 
 		// skip impossible combos
-		if ((i & LIGHTDEF_USE_PARALLAXMAP) && !r_parallaxMapping->integer)
+		if ((i & LIGHTDEF_USE_PARALLAXMAP)
+			&& !(r_parallaxMapping->integer
+				|| (fastLight && lightType == LIGHTDEF_USE_LIGHTMAP
+					&& !(i & (LIGHTDEF_ENTITY_VERTEX_ANIMATION | LIGHTDEF_ENTITY_BONE_ANIMATION | LIGHTDEF_USE_SHADOWMAP)))))
 			continue;
 
 		if ((i & LIGHTDEF_USE_SHADOWMAP) && (!lightType || !r_sunlightMode->integer || (!r_sunShadows->integer && !r_forceSun->integer)))
@@ -1303,6 +1323,12 @@ void GLSL_InitGPUShaders(void)
 				Q_strcat(extradefines, 1024, "#extension GL_EXT_shadow_samplers : enable\n");
 			if (wantRelief)
 				Q_strcat(extradefines, 1024, "#define USE_WORLD_RELIEF\n");
+			if (wantRelief && (i & LIGHTDEF_USE_PARALLAXMAP))
+			{
+				Q_strcat(extradefines, 1024, "#define USE_WORLD_NH\n");
+				Q_strcat(extradefines, 1024, "#define USE_NORMALMAP\n");
+				attribs |= ATTR_TANGENT;
+			}
 			if (wantSunShadow)
 				Q_strcat(extradefines, 1024, "#define USE_SUN_SHADOW\n");
 		}
@@ -1495,10 +1521,13 @@ void GLSL_InitGPUShaders(void)
 		qboolean canSunShadow = glRefConfig.framebufferObject
 			&& (glRefConfig.glslMajorVersion > 1 || (glRefConfig.glslMajorVersion == 1 && glRefConfig.glslMinorVersion >= 10) || glRefConfig.shadowSamplers);
 		qboolean wantSunShadow = !!(i & MODELDEF_USE_SUN_SHADOW);
+		qboolean wantModelNh = !!(i & MODELDEF_USE_NORMALMAP);
 		qboolean wantDerivatives = (i & MODELDEF_USE_SPECULAR)
 			&& (!qglesMajorVersion || qglesMajorVersion >= 3 || glRefConfig.standardDerivatives);
 
 		if (wantSunShadow && !canSunShadow)
+			continue;
+		if (wantModelNh && (!(i & MODELDEF_USE_SPECULAR) || !wantDerivatives))
 			continue;
 
 		attribs = ATTR_POSITION | ATTR_TEXCOORD | ATTR_LIGHTCOORD | ATTR_NORMAL | ATTR_COLOR;
@@ -1529,6 +1558,9 @@ void GLSL_InitGPUShaders(void)
 		if (wantSunShadow)
 			Q_strcat(extradefines, 1024, "#define USE_SUN_SHADOW\n");
 
+		if (wantModelNh)
+			Q_strcat(extradefines, 1024, "#define USE_MODEL_NH\n");
+
 		if (!GLSL_InitGPUShader(&tr.modelLightShader[i], "modellight", attribs, qtrue, extradefines, qtrue, fallbackShader_modellight_vp, fallbackShader_modellight_fp))
 		{
 			ri.Error(ERR_FATAL, "Could not load modellight shader!");
@@ -1536,6 +1568,8 @@ void GLSL_InitGPUShaders(void)
 
 		GLSL_InitUniforms(&tr.modelLightShader[i]);
 		GLSL_SetUniformInt(&tr.modelLightShader[i], UNIFORM_DIFFUSEMAP, TB_DIFFUSEMAP);
+		if (wantModelNh)
+			GLSL_SetUniformInt(&tr.modelLightShader[i], UNIFORM_NORMALMAP, TB_NORMALMAP);
 		if (wantSunShadow)
 			GLSL_SetUniformInt(&tr.modelLightShader[i], UNIFORM_SUNSHADOWMAP, TB_SHADOWMAP2);
 		GLSL_FinishGPUShader(&tr.modelLightShader[i]);
@@ -1900,6 +1934,8 @@ void GLSL_ShutdownGPUShaders(void)
 
 	for ( i = 0; i < SOFTPARTDEF_COUNT; i++)
 		GLSL_DeleteGPUShader(&tr.softParticleShader[i]);
+
+	GLSL_DeleteGPUShader(&tr.wetBloodShader);
 
 	GLSL_DeleteGPUShader(&tr.pshadowShader);
 	GLSL_DeleteGPUShader(&tr.down4xShader);

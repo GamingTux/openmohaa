@@ -3198,12 +3198,29 @@ void CL_InitRef( void ) {
 	// Ensure Remaster gameplay/view cvars exist immediately for the UI menu before a map loads
 	Cvar_Get("cg_marks_lifetime", "45", CVAR_ARCHIVE);
 	Cvar_Get("cg_modernGunplay", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_widescreenFov", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_hitmarker", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_gore", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_damageIndicator", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_grenadeIndicator", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_gunSmoke", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_explosionFx", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_impactSparks", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_holdBreath", "1", CVAR_ARCHIVE);
+	Cvar_Get("cg_lowAmmoWarn", "1", CVAR_ARCHIVE);
 	Cvar_Get("cg_extendedFarplane", "1", CVAR_ARCHIVE);
 	Cvar_Get("cg_farplaneScale", "1.35", CVAR_ARCHIVE);
 	Cvar_Get("g_aiFairness", "1", CVAR_ARCHIVE);
+	Cvar_Get("g_autoHeal", "1", CVAR_ARCHIVE);
+	Cvar_Get("g_sprint", "1", CVAR_ARCHIVE);
 	Cvar_Get("r_foliageWind", "1", CVAR_ARCHIVE);
 	Cvar_Get("r_emissiveGlow", "1", CVAR_ARCHIVE);
 	Cvar_Get("r_mapAtmosphere", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_worldParallax", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_motionBlur", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_weatherWetness", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_sunShafts", "1", CVAR_ARCHIVE);
+	Cvar_Get("r_underwaterFx", "1", CVAR_ARCHIVE);
 
 	Com_Printf( "----- Initializing Renderer ----\n" );
 
@@ -3548,6 +3565,74 @@ static void CL_GenerateQKey(void)
 	}
 }
 
+static void CL_RemasterToggle_f( void ) {
+	static const char *s_cvars[] = {
+		"r_dynamicSunShadows",
+		"r_modelPerPixelLighting",
+		"r_modernWater",
+		"r_worldMicroRelief",
+		"r_worldParallax",
+		"r_modernDlights",
+		"r_softParticles",
+		"r_foliageWind",
+		"r_emissiveGlow",
+		"r_mapAtmosphere",
+		"r_bloom",
+		"r_filmicTonemap",
+		"r_sharpen",
+		"r_motionBlur",
+		"r_weatherWetness",
+		"r_sunShafts",
+		"r_underwaterFx",
+		"r_extendedLod",
+		"cg_extendedFarplane",
+		"cg_modernGunplay",
+		"cg_widescreenFov",
+		"cg_hitmarker",
+		"cg_gore",
+		"cg_damageIndicator",
+		"cg_grenadeIndicator",
+		"cg_gunSmoke",
+		"cg_explosionFx",
+		"cg_impactSparks",
+		"cg_holdBreath",
+		"cg_lowAmmoWarn",
+		"g_aiFairness",
+		"g_autoHeal",
+		"g_sprint"
+	};
+	static const int kCount = (int)(sizeof(s_cvars) / sizeof(s_cvars[0]));
+	static char s_saved[40][32];
+	static qboolean s_hasSaved = qfalse;
+	int i;
+	qboolean anyOn = qfalse;
+
+	for ( i = 0; i < kCount; i++ ) {
+		if ( Cvar_VariableValue( s_cvars[i] ) > 0.001f ) {
+			anyOn = qtrue;
+			break;
+		}
+	}
+
+	if ( anyOn ) {
+		for ( i = 0; i < kCount; i++ ) {
+			Q_strncpyz( s_saved[i], Cvar_VariableString( s_cvars[i] ), sizeof( s_saved[i] ) );
+			Cvar_Set( s_cvars[i], "0" );
+		}
+		s_hasSaved = qtrue;
+		Com_Printf( "Remaster Effects: OFF (Classic)\n" );
+	} else {
+		for ( i = 0; i < kCount; i++ ) {
+			if ( s_hasSaved && s_saved[i][0] ) {
+				Cvar_Set( s_cvars[i], s_saved[i] );
+			} else {
+				Cvar_Set( s_cvars[i], "1" );
+			}
+		}
+		Com_Printf( "Remaster Effects: ON\n" );
+	}
+}
+
 /*
 ====================
 CL_Init
@@ -3752,6 +3837,7 @@ void CL_Init( void ) {
 	Cmd_AddCommand ("fs_referencedList", CL_ReferencedPK3List_f );
 	Cmd_AddCommand ("video", CL_Video_f );
 	Cmd_AddCommand ("stopvideo", CL_StopVideo_f );
+	Cmd_AddCommand ("remaster_toggle", CL_RemasterToggle_f );
 	CL_InitConsoleCommands();
 	CL_InitRef();
 	CL_StartHunkUsers(qfalse);
@@ -3759,6 +3845,10 @@ void CL_Init( void ) {
 	SCR_Init ();
 
 	Cbuf_Execute (0);
+
+	if ( !Key_GetBinding( K_F8 ) || !Key_GetBinding( K_F8 )[0] ) {
+		Key_SetBinding( K_F8, "remaster_toggle" );
+	}
 
 	Cvar_Set( "cl_running", "1" );
 

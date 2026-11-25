@@ -344,7 +344,31 @@ extern "C" {
         float    recoilRoll;
         float    landDip;
         float    prevVelZ;
+        int      lastFireTime;
+        int      hitmarkerTime;
+        qboolean hitmarkerHeavy;
+        float    swayYaw;
+        float    swayPitch;
+        float    lastSwayYaw;
+        float    lastSwayPitch;
+        int      lastSwayTime;
         qboolean prevOnGround;
+        int      prevHealth;
+        int      dmgIndTime;
+        float    dmgIndYaw;
+        float    dmgIndStrength;
+        vec3_t   grenadeWarnPos;
+        float    grenadeWarnDist;
+        int      grenadeWarnTime;
+        float    barrelHeat;
+        int      lastSmokeTime;
+        int      explShakeTime;
+        float    explShakeAmp;
+        float    sprintFrac;
+        float    smoothViewHeight;
+        float    breathStamina;
+        qboolean holdingBreath;
+        qboolean breathExhausted;
 
         // objectives
         cobjective_t Objectives[20];
@@ -367,6 +391,10 @@ extern "C" {
         qhandle_t     shadowMarkShader;
         qhandle_t     footShadowMarkShader;
         qhandle_t     wakeMarkShader;
+        qhandle_t     bloodSplatShaders[2];
+        qhandle_t     bloodPoolShader;
+        qhandle_t     bloodMistShader;
+        qhandle_t     gunSmokeShader;
         qhandle_t     pausedShader;
         qhandle_t     levelExitShader;
         qhandle_t     zoomOverlayShader;
@@ -524,6 +552,16 @@ extern "C" {
     extern cvar_t *cg_cheats;
     extern cvar_t *cg_marks_lifetime;
     extern cvar_t *cg_modernGunplay;
+    extern cvar_t *cg_widescreenFov;
+    extern cvar_t *cg_hitmarker;
+    extern cvar_t *cg_gore;
+    extern cvar_t *cg_damageIndicator;
+    extern cvar_t *cg_grenadeIndicator;
+    extern cvar_t *cg_gunSmoke;
+    extern cvar_t *cg_explosionFx;
+    extern cvar_t *cg_impactSparks;
+    extern cvar_t *cg_holdBreath;
+    extern cvar_t *cg_lowAmmoWarn;
     extern cvar_t *cg_extendedFarplane;
     extern cvar_t *cg_farplaneScale;
 
@@ -707,6 +745,11 @@ extern "C" {
     //
     void CG_InitMarks(void);
     void CG_AddMarks(void);
+    void CG_InitGore(void);
+    void CG_SpawnBloodImpact(const vec3_t pos, const vec3_t norm, qboolean large);
+    void CG_SpawnGunSmoke(const vec3_t pos, const vec3_t vel, float heatFrac);
+    void CG_SpawnImpactSparks(const vec3_t pos, const vec3_t norm, qboolean metallic, qboolean large);
+    void CG_AddGoreParticles(void);
     void CG_ImpactMark(
         qhandle_t    markShader,
         const vec3_t origin,

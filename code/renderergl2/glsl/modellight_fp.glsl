@@ -1,4 +1,7 @@
 uniform sampler2D u_DiffuseMap;
+#if defined(USE_MODEL_NH)
+uniform sampler2D u_NormalMap;
+#endif
 
 #if defined(USE_ALPHATEST)
 uniform int       u_AlphaTest;
@@ -98,13 +101,29 @@ void main()
 	float minC = min(texColor.r, min(texColor.g, texColor.b));
 	float metalMask = clamp((0.31 * max(maxC, 0.24) - (maxC - minC)) * 14.0, 0.0, 1.0);
 
-#if defined(USE_DERIVATIVES)
+#if defined(USE_MODEL_NH) && defined(USE_DERIVATIVES)
+	// True Multi-Scale Normal + Baked Crevice Micro-AO projected via UV Jacobian (UV-rotation accurate, 0 extra varyings!)
+	vec4 nh      = texture2D(u_NormalMap, var_DiffuseTex);
+	vec2 nxy     = nh.rg * 2.0 - vec2(1.0);
+	vec2 dStX    = dFdx(var_DiffuseTex);
+	vec2 dStY    = dFdy(var_DiffuseTex);
+	float invUv  = inversesqrt(max(dot(dStX, dStX) + dot(dStY, dStY), 1e-8));
+	vec2 dL      = clamp(vec2(dot(nxy, dStX), dot(nxy, dStY)) * invUv, vec2(-0.65), vec2(0.65));
+	vec3 grad    = dL.x * u_ModelScreenRight + dL.y * u_ModelScreenUp;
+	grad        -= N * dot(grad, N);
+	N           -= grad * (u_ModelMaterial2.w * 0.42 * (0.45 + 0.55 * metalMask));
+	N           *= 1.5 - 0.5 * dot(N, N);
+	float modelAo = mix(1.0, nh.b, 0.34);
+#elif defined(USE_DERIVATIVES)
 	// Ultra-lean tangent-projected micro-relief without a 2nd normalize()
 	float lum = dot(texColor.rgb, vec3(0.30, 0.59, 0.11));
 	vec2 dL   = clamp(vec2(dFdx(lum), dFdy(lum)), vec2(-0.28), vec2(0.28));
 	vec3 grad = dL.x * u_ModelScreenRight + dL.y * u_ModelScreenUp;
 	grad     -= N * dot(grad, N);
 	N        -= grad * (u_ModelMaterial2.w * (0.35 + 0.65 * metalMask));
+	float modelAo = 1.0;
+#else
+	float modelAo = 1.0;
 #endif
 
 	// Dominant Light 0 diffuse + algebraic Blinn-Phong specular using VP-precomputed L0, att0, H0, V (0 SFU!)
@@ -139,10 +158,10 @@ void main()
 #if defined(USE_SUN_SHADOW)
 	float sunVis    = 1.0 - sunDark;
 	vec3 litDiffuse = min(ambLit * (1.0 - sunDark * 0.30) + diffSum * sunVis, vec3(1.12));
-	vec3 finalRgb   = texColor.rgb * litDiffuse + specSum * (sunVis * sunVis) + envRefl * (0.55 + 0.45 * sunVis);
+	vec3 finalRgb   = texColor.rgb * (litDiffuse * modelAo) + specSum * (sunVis * sunVis * modelAo) + envRefl * (0.55 + 0.45 * sunVis);
 #else
 	vec3 litDiffuse = min(ambLit + diffSum, vec3(1.12));
-	vec3 finalRgb   = texColor.rgb * litDiffuse + specSum + envRefl;
+	vec3 finalRgb   = texColor.rgb * (litDiffuse * modelAo) + specSum * modelAo + envRefl;
 #endif
 
 	// Zero-division quadratic soft highlight rolloff (eliminates 3x RGB rcp SFU ops!)

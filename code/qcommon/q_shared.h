@@ -1839,6 +1839,7 @@ typedef struct playerState_s {
 #define BUTTON_LEAN_LEFT_BITINDEX		4
 #define BUTTON_LEAN_RIGHT_BITINDEX		5
 #define BUTTON_TALK_BITINDEX			6			// displays talk balloon and disables actions
+#define BUTTON_SPRINT_BITINDEX			13			// Remaster tactical sprint
 #define BUTTON_ANY_BITINDEX				14			// any key whatsoever
 #define BUTTON_MOUSE_BITINDEX			15			// mouse move
 
@@ -1849,6 +1850,7 @@ typedef struct playerState_s {
 #define BUTTON_LEAN_LEFT       (1 << BUTTON_LEAN_LEFT_BITINDEX)
 #define BUTTON_LEAN_RIGHT      (1 << BUTTON_LEAN_RIGHT_BITINDEX)
 #define	BUTTON_TALK			   (1 << BUTTON_TALK_BITINDEX)			// displays talk balloon and disables actions
+#define BUTTON_SPRINT          (1 << BUTTON_SPRINT_BITINDEX)
 #define	BUTTON_ANY			   (1 << BUTTON_ANY_BITINDEX)		   // any key whatsoever
 #define BUTTON_MOUSE           (1 << BUTTON_MOUSE_BITINDEX)
 

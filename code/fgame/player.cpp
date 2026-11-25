@@ -4098,6 +4098,48 @@ void Player::ClientMove(usercmd_t *ucmd)
         }
     }
 
+    if (g_gametype->integer == GT_SINGLE_PLAYER && g_sprint && g_sprint->integer > 0) {
+        // Remaster tactical sprint: ~32% boost for ~4.2s stamina (double-tap W or +sprint, savegame-safe)
+        static float s_sprintStamina   = 100.0f;
+        static float s_sprintLastTime  = -1.0f;
+        static float s_sprintStopTime  = -10.0f;
+        static qboolean s_sprintExhausted = qfalse;
+        float dt = (s_sprintLastTime >= 0.0f && level.time >= s_sprintLastTime) ? (level.time - s_sprintLastTime) : 0.0f;
+        if (level.time < s_sprintLastTime || dt > 1.0f || health <= 0.0f || deadflag) {
+            s_sprintStamina   = 100.0f;
+            s_sprintExhausted = qfalse;
+            dt = 0.0f;
+        }
+        s_sprintLastTime = level.time;
+
+        qboolean wantsSprint = (groundentity != NULL)
+            && !(m_iMovePosFlags & MPF_POSITION_CROUCHING)
+            && !IsZoomed()
+            && (last_ucmd.forwardmove > 0)
+            && (last_ucmd.buttons & BUTTON_SPRINT)
+            && !(last_ucmd.buttons & (BUTTON_ATTACKLEFT | BUTTON_ATTACKRIGHT));
+
+        if (wantsSprint && !s_sprintExhausted && s_sprintStamina > 0.0f) {
+            client->ps.speed = (int)((float)client->ps.speed * 1.32f);
+            s_sprintStamina -= dt * 24.0f;
+            s_sprintStopTime = level.time;
+            if (s_sprintStamina <= 0.0f) {
+                s_sprintStamina   = 0.0f;
+                s_sprintExhausted = qtrue;
+            }
+        } else {
+            if ((level.time - s_sprintStopTime) >= 0.75f && s_sprintStamina < 100.0f) {
+                s_sprintStamina += dt * 19.0f;
+                if (s_sprintStamina >= 100.0f) {
+                    s_sprintStamina = 100.0f;
+                }
+            }
+            if (s_sprintExhausted && s_sprintStamina >= 25.0f) {
+                s_sprintExhausted = qfalse;
+            }
+        }
+    }
+
     if (g_gametype->integer != GT_SINGLE_PLAYER) {
         client->ps.speed = (int)((float)client->ps.speed * sv_dmspeedmult->value);
     }
@@ -4680,6 +4722,44 @@ void Player::Think(void)
     }
 
     if (g_gametype->integer == GT_SINGLE_PLAYER) {
+        // Optional single-player emergency auto-heal up to 25% max health after 5s out of combat (savegame-safe)
+        if (g_autoHeal && g_autoHeal->integer > 0) {
+            static float s_lastHealHealth = -1.0f;
+            static float s_lastDamageTime = -100.0f;
+            static float s_healAccum      = 0.0f;
+            static float s_lastThinkTime  = -1.0f;
+
+            if (level.time < s_lastThinkTime || s_lastThinkTime < 0.0f || health <= 0.0f || deadflag) {
+                s_lastHealHealth = health;
+                s_lastDamageTime = level.time;
+                s_healAccum      = 0.0f;
+            } else {
+                if (health < s_lastHealHealth - 0.01f) {
+                    s_lastDamageTime = level.time;
+                    s_healAccum      = 0.0f;
+                }
+                const float healCap = (max_health > 0.0f ? max_health : 100.0f) * 0.25f;
+                if (health > 0.0f && health < healCap && (level.time - s_lastDamageTime) >= 5.0f) {
+                    float dt = level.time - s_lastThinkTime;
+                    if (dt > 0.0f && dt < 1.0f) {
+                        s_healAccum += dt * 4.0f;
+                        if (s_healAccum >= 1.0f) {
+                            float add = floorf(s_healAccum);
+                            s_healAccum -= add;
+                            health += add;
+                            if (health > healCap) {
+                                health = healCap;
+                            }
+                        }
+                    }
+                } else {
+                    s_healAccum = 0.0f;
+                }
+                s_lastHealHealth = health;
+            }
+            s_lastThinkTime = level.time;
+        }
+
         m_bIsDisguised = false;
 
         if (m_bHasDisguise && !level.m_bAlarm) {

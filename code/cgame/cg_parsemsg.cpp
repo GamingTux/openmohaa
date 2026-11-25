@@ -953,11 +953,40 @@ void CG_AddBulletImpacts()
                 );
             }
         }
+        if (cg_impactSparks && cg_impactSparks->integer > 0) {
+            for (i = 0; i < wall_impact_count; i++) {
+                int t = wall_impact_type[i];
+                qboolean isMetal = (t == SFX_BHIT_METAL_LITE || t == SFX_BHIT_METAL_HARD
+                                    || t == SFX_BHIT_GRILL_LITE || t == SFX_BHIT_GRILL_HARD);
+                qboolean isStone = (t == SFX_BHIT_STONE_LITE || t == SFX_BHIT_STONE_HARD);
+                if (isMetal || isStone) {
+                    CG_SpawnImpactSparks(wall_impact_pos[i], wall_impact_norm[i], isMetal, wall_impact_large[i] ? qtrue : qfalse);
+                }
+            }
+        }
     }
 
     wall_impact_count = 0;
 
     if (flesh_impact_count) {
+        if (cg_hitmarker && cg_hitmarker->integer && (cg.time - cg.lastFireTime) >= 0 && (cg.time - cg.lastFireTime) <= 220) {
+            for (i = 0; i < flesh_impact_count; i++) {
+                vec3_t toHit;
+                float  dist;
+                VectorSubtract(flesh_impact_pos[i], cg.refdef.vieworg, toHit);
+                dist = VectorNormalize(toHit);
+                if (dist > 32.0f && DotProduct(toHit, cg.refdef.viewaxis[0]) > 0.78f) {
+                    cg.hitmarkerTime  = cg.time;
+                    cg.hitmarkerHeavy = (flesh_impact_large[i] != 0) ? qtrue : qfalse;
+                    break;
+                }
+            }
+        }
+        if (cg_gore && cg_gore->integer > 0) {
+            for (i = 0; i < flesh_impact_count; i++) {
+                CG_SpawnBloodImpact(flesh_impact_pos[i], flesh_impact_norm[i], flesh_impact_large[i] ? qtrue : qfalse);
+            }
+        }
         if (flesh_impact_count > 1) {
             fImpSndDistRA  = 9999.0;
             fImpSndDistLA  = 9999.0;
@@ -1023,6 +1052,26 @@ void CG_MakeExplosionEffect(const vec3_t vPos, int iType)
     vEnd[1] = vPos[1];
     vEnd[2] = vPos[2] - 64.0;
     fRadius = 64.0;
+
+    if (cg_explosionFx && cg_explosionFx->integer > 0) {
+        vec3_t toExpl;
+        float  dist;
+        VectorSubtract(vPos, cg.refdef.vieworg, toExpl);
+        dist = VectorLength(toExpl);
+        if (dist < 950.0f) {
+            float power = 1.0f - (dist / 950.0f);
+            float scale = (iType == CGM_EXPLOSION_EFFECT_3 || iType == CGM_EXPLOSION_EFFECT_2) ? 1.35f : 1.0f;
+            float amp   = Com_Clamp(0.0f, 1.35f, power * power * 1.15f * scale + power * 0.25f * scale);
+            float prevRem = 0.0f;
+            if (cg.explShakeTime > 0 && (cg.time - cg.explShakeTime) < 1100) {
+                prevRem = cg.explShakeAmp * (1.0f - (float)(cg.time - cg.explShakeTime) / 1100.0f);
+            }
+            if (amp >= prevRem * 0.75f) {
+                cg.explShakeTime = cg.time;
+                cg.explShakeAmp  = (amp > prevRem) ? amp : prevRem;
+            }
+        }
+    }
 
     if ((CG_PointContents(vPos, 0)) & MASK_WATER) {
         iBaseEffect = SFX_EXP_GREN_PUDDLE;

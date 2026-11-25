@@ -1548,6 +1548,272 @@ void CG_DrawVote()
     }
 }
 
+static void CG_DrawLowHealthVignette(void)
+{
+    if (!cg_modernGunplay || !cg_modernGunplay->integer || !cg.snap) {
+        return;
+    }
+    if (cg.predicted_player_state.pm_flags & PMF_CAMERA_VIEW) {
+        return;
+    }
+
+    int hp = cg.snap->ps.stats[STAT_HEALTH];
+    if (hp <= 0 || hp >= 25) {
+        return;
+    }
+
+    float severity = (25.0f - (float)hp) / 24.0f;
+    float pulse    = 0.72f + 0.28f * sinf(cg.time * 0.0052f);
+    float maxAlpha = severity * 0.28f * pulse;
+    float w        = (float)cgs.glconfig.vidWidth;
+    float h        = (float)cgs.glconfig.vidHeight;
+    const int bands = 8;
+
+    for (int i = 0; i < bands; i++) {
+        float frac  = 1.0f - ((float)i / (float)bands);
+        float a     = maxAlpha * (frac * frac) * 0.34f;
+        float thickX = w * 0.015f;
+        float thickY = h * 0.018f;
+        float insetX = thickX * (float)i;
+        float insetY = thickY * (float)i;
+        vec4_t col   = {0.65f, 0.02f, 0.02f, a};
+
+        cgi.R_SetColor(col);
+        // Top & bottom edge strips
+        cgi.R_DrawBox(insetX, insetY, w - 2.0f * insetX, thickY);
+        cgi.R_DrawBox(insetX, h - insetY - thickY, w - 2.0f * insetX, thickY);
+        // Left & right edge strips (between top & bottom)
+        cgi.R_DrawBox(insetX, insetY + thickY, thickX, h - 2.0f * (insetY + thickY));
+        cgi.R_DrawBox(w - insetX - thickX, insetY + thickY, thickX, h - 2.0f * (insetY + thickY));
+    }
+    cgi.R_SetColor(NULL);
+}
+
+static void CG_DrawHitmarker(void)
+{
+    if (!cg_hitmarker || !cg_hitmarker->integer || cg.hitmarkerTime <= 0) {
+        return;
+    }
+
+    int elapsed = cg.time - cg.hitmarkerTime;
+    if (elapsed < 0 || elapsed >= 180) {
+        return;
+    }
+
+    float alpha = 1.0f - ((float)elapsed / 180.0f);
+    float cx    = (float)cgs.glconfig.vidWidth * 0.5f;
+    float cy    = (float)cgs.glconfig.vidHeight * 0.5f;
+    float scale = (cgs.glconfig.vidHeight / 720.0f);
+    if (scale < 1.0f) {
+        scale = 1.0f;
+    }
+
+    vec4_t col;
+    if (cg.hitmarkerHeavy) {
+        col[0] = 1.0f; col[1] = 0.28f; col[2] = 0.22f; col[3] = alpha * 0.92f;
+    } else {
+        col[0] = 0.98f; col[1] = 0.95f; col[2] = 0.85f; col[3] = alpha * 0.85f;
+    }
+    cgi.R_SetColor(col);
+
+    // 4 crisp diagonal ticks around center crosshair
+    const int steps = 5;
+    float gap = 5.0f * scale;
+    float sz  = 1.8f * scale;
+    for (int s = 0; s < steps; s++) {
+        float d = gap + (float)s * (1.55f * scale);
+        cgi.R_DrawBox(cx - d - sz * 0.5f, cy - d - sz * 0.5f, sz, sz);
+        cgi.R_DrawBox(cx + d - sz * 0.5f, cy - d - sz * 0.5f, sz, sz);
+        cgi.R_DrawBox(cx - d - sz * 0.5f, cy + d - sz * 0.5f, sz, sz);
+        cgi.R_DrawBox(cx + d - sz * 0.5f, cy + d - sz * 0.5f, sz, sz);
+    }
+    cgi.R_SetColor(NULL);
+}
+
+static void CG_DrawExplosionDust(void)
+{
+    if (!cg_explosionFx || !cg_explosionFx->integer || cg.explShakeTime <= 0) {
+        return;
+    }
+
+    int elapsed = cg.time - cg.explShakeTime;
+    if (elapsed < 0 || elapsed >= 1150) {
+        return;
+    }
+
+    float t        = 1.0f - ((float)elapsed / 1150.0f);
+    float maxAlpha = Com_Clamp(0.0f, 0.42f, cg.explShakeAmp * 0.34f * t * t);
+    if (maxAlpha <= 0.005f) {
+        return;
+    }
+
+    float w = (float)cgs.glconfig.vidWidth;
+    float h = (float)cgs.glconfig.vidHeight;
+    const int bands = 6;
+
+    for (int i = 0; i < bands; i++) {
+        float frac   = 1.0f - ((float)i / (float)bands);
+        float a      = maxAlpha * (frac * frac) * 0.40f;
+        float thickX = w * 0.022f;
+        float thickY = h * 0.024f;
+        float insetX = thickX * (float)i;
+        float insetY = thickY * (float)i;
+        vec4_t col   = {0.26f, 0.21f, 0.14f, a};
+
+        cgi.R_SetColor(col);
+        cgi.R_DrawBox(insetX, insetY, w - 2.0f * insetX, thickY);
+        cgi.R_DrawBox(insetX, h - insetY - thickY, w - 2.0f * insetX, thickY);
+        cgi.R_DrawBox(insetX, insetY + thickY, thickX, h - 2.0f * (insetY + thickY));
+        cgi.R_DrawBox(w - insetX - thickX, insetY + thickY, thickX, h - 2.0f * (insetY + thickY));
+    }
+    cgi.R_SetColor(NULL);
+}
+
+static void CG_DrawDamageIndicator(void)
+{
+    if (!cg_damageIndicator || !cg_damageIndicator->integer || cg.dmgIndTime <= 0) {
+        return;
+    }
+
+    int elapsed = cg.time - cg.dmgIndTime;
+    if (elapsed < 0 || elapsed >= 1400) {
+        return;
+    }
+
+    float alpha = (1.0f - ((float)elapsed / 1400.0f));
+    alpha = alpha * alpha * Com_Clamp(0.45f, 0.95f, cg.dmgIndStrength);
+
+    // Relative angle to attacker: 0 = straight ahead (top of screen), +90 = left, -90 = right
+    float relDeg = AngleSubtract(cg.dmgIndYaw, cg.refdefViewAngles[YAW]);
+    float relRad = DEG2RAD(relDeg);
+
+    float cx    = (float)cgs.glconfig.vidWidth * 0.5f;
+    float cy    = (float)cgs.glconfig.vidHeight * 0.5f;
+    float scale = cgs.glconfig.vidHeight / 720.0f;
+    if (scale < 1.0f) scale = 1.0f;
+    float radius = 92.0f * scale;
+
+    // 11-dot tapered crimson arc facing attacker direction
+    for (int s = -5; s <= 5; s++) {
+        float ang   = relRad + (float)s * 0.085f;
+        float sx    = -sinf(ang);
+        float sy    = -cosf(ang);
+        float taper = 1.0f - fabsf((float)s) / 6.2f;
+        float thick = (5.5f + 4.5f * taper) * scale;
+        float px    = cx + sx * radius;
+        float py    = cy + sy * radius;
+        vec4_t col  = {0.86f, 0.06f, 0.04f, alpha * taper};
+
+        cgi.R_SetColor(col);
+        cgi.R_DrawBox(px - thick * 0.5f, py - thick * 0.5f, thick, thick);
+    }
+    cgi.R_SetColor(NULL);
+}
+
+static void CG_DrawGrenadeIndicator(void)
+{
+    if (!cg_grenadeIndicator || !cg_grenadeIndicator->integer || cg.grenadeWarnTime <= 0) {
+        return;
+    }
+    if ((cg.time - cg.grenadeWarnTime) > 140) {
+        return;
+    }
+
+    vec3_t toGren;
+    VectorSubtract(cg.grenadeWarnPos, cg.refdef.vieworg, toGren);
+    float grenYaw = RAD2DEG(atan2f(toGren[1], toGren[0]));
+    float relDeg  = AngleSubtract(grenYaw, cg.refdefViewAngles[YAW]);
+    float relRad  = DEG2RAD(relDeg);
+
+    float cx    = (float)cgs.glconfig.vidWidth * 0.5f;
+    float cy    = (float)cgs.glconfig.vidHeight * 0.5f;
+    float scale = cgs.glconfig.vidHeight / 720.0f;
+    if (scale < 1.0f) scale = 1.0f;
+
+    float danger = Com_Clamp(0.25f, 1.0f, 1.0f - (cg.grenadeWarnDist / 360.0f));
+    float pulse  = 0.65f + 0.35f * sinf(cg.time * (0.012f + danger * 0.016f));
+    float radius = 128.0f * scale;
+    float dirX   = -sinf(relRad);
+    float dirY   = -cosf(relRad);
+    float bx     = cx + dirX * radius;
+    float by     = cy + dirY * radius;
+
+    // Dark tactical badge + pulsing amber-red grenade icon + outward direction tip
+    float bsz = 18.0f * scale;
+    vec4_t bg = {0.06f, 0.06f, 0.05f, 0.72f * pulse};
+    vec4_t fg = {1.0f, 0.52f - 0.38f * danger, 0.12f, 0.95f * pulse};
+
+    cgi.R_SetColor(bg);
+    cgi.R_DrawBox(bx - bsz * 0.5f, by - bsz * 0.5f, bsz, bsz);
+
+    // Stylized grenade body + top spoon inside badge
+    cgi.R_SetColor(fg);
+    cgi.R_DrawBox(bx - 4.0f * scale, by - 2.0f * scale, 8.0f * scale, 8.0f * scale);
+    cgi.R_DrawBox(bx - 2.0f * scale, by - 6.0f * scale, 4.0f * scale, 3.5f * scale);
+
+    // Outward pointer chevron toward grenade
+    float tipDist = radius + 16.0f * scale;
+    float px = cx + dirX * tipDist;
+    float py = cy + dirY * tipDist;
+    float psz = 5.5f * scale;
+    cgi.R_DrawBox(px - psz * 0.5f, py - psz * 0.5f, psz, psz);
+
+    cgi.R_SetColor(NULL);
+}
+
+static void CG_DrawLowAmmoAndBreathHud(void)
+{
+    float w     = (float)cgs.glconfig.vidWidth;
+    float h     = (float)cgs.glconfig.vidHeight;
+    float scale = h / 720.0f;
+    if (scale < 1.0f) scale = 1.0f;
+
+    if (!cg.snap || cg.snap->ps.stats[STAT_HEALTH] <= 0) {
+        return;
+    }
+
+    // Subtle pulsing low-ammo warning strip near bottom-right when magazine <= 25% (<= 3 rounds)
+    if (cg_lowAmmoWarn && cg_lowAmmoWarn->integer > 0) {
+        int clip    = cg.snap->ps.stats[STAT_CLIPAMMO];
+        int maxClip = cg.snap->ps.stats[STAT_MAXCLIPAMMO];
+        if (maxClip >= 4 && clip >= 0 && (clip * 4 <= maxClip || clip <= 2)) {
+            float pulse = 0.50f + 0.50f * sinf(cg.time * (clip == 0 ? 0.014f : 0.0085f));
+            float bw    = 96.0f * scale;
+            float bh    = 4.5f * scale;
+            float bx    = w - bw - 26.0f * scale;
+            float by    = h - 46.0f * scale;
+            vec4_t col;
+            if (clip == 0) {
+                col[0] = 0.96f; col[1] = 0.14f; col[2] = 0.10f; col[3] = 0.85f * pulse;
+            } else {
+                col[0] = 0.98f; col[1] = 0.62f; col[2] = 0.12f; col[3] = 0.72f * pulse;
+            }
+            cgi.R_SetColor(col);
+            cgi.R_DrawBox(bx, by, bw, bh);
+            cgi.R_SetColor(NULL);
+        }
+    }
+
+    // Subtle sniper breath-hold bar below scope center while zoomed and holding/recovering breath
+    if (cg_holdBreath && cg_holdBreath->integer > 0
+        && cg.snap->ps.stats[STAT_INZOOM] && cg.snap->ps.stats[STAT_INZOOM] <= 30
+        && (cg.holdingBreath || cg.breathStamina < 99.0f)) {
+        float bw   = 110.0f * scale;
+        float bh   = 4.0f * scale;
+        float bx   = w * 0.5f - bw * 0.5f;
+        float by   = h * 0.74f;
+        float frac = Com_Clamp(0.0f, 1.0f, cg.breathStamina * 0.01f);
+        vec4_t bg  = {0.04f, 0.05f, 0.05f, 0.62f};
+        vec4_t fg  = {cg.breathExhausted ? 0.90f : 0.78f, cg.breathExhausted ? 0.25f : 0.92f, cg.breathExhausted ? 0.18f : 0.98f, 0.82f};
+
+        cgi.R_SetColor(bg);
+        cgi.R_DrawBox(bx - 1.5f, by - 1.5f, bw + 3.0f, bh + 3.0f);
+        cgi.R_SetColor(fg);
+        cgi.R_DrawBox(bx, by, bw * frac, bh);
+        cgi.R_SetColor(NULL);
+    }
+}
+
 /*
 ==============
 CG_Draw2D
@@ -1557,6 +1823,11 @@ void CG_Draw2D(void)
 {
     CG_UpdateCountdown();
     CG_DrawZoomOverlay();
+    CG_DrawExplosionDust();
+    CG_DrawLowHealthVignette();
+    CG_DrawDamageIndicator();
+    CG_DrawGrenadeIndicator();
+    CG_DrawLowAmmoAndBreathHud();
     CG_DrawLagometer();
     CG_HudDrawElements();
     CG_DrawObjectives();
@@ -1569,4 +1840,5 @@ void CG_Draw2D(void)
     CG_DrawVote();
     CG_DrawInstantMessageMenu();
     CG_DrawCrosshair();
+    CG_DrawHitmarker();
 }

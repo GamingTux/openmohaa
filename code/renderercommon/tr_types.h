@@ -63,6 +63,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #define RDF_NOWORLDMODEL	0x0001		// used for player configuration screen
 #define RDF_HUD				0x0002
 #define RDF_HYPERSPACE		0x0004		// teleportation effect
+#define RDF_UNDERWATER		0x0008		// Remaster underwater post-process flag
 
 typedef struct {
 	vec3_t		xyz;

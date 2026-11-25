@@ -56,7 +56,7 @@ struct ThreadPoolState {
     std::mutex               wakeMutex;
     std::condition_variable  wakeCv;
 
-    std::atomic<uint64_t>    generation{0};
+    std::atomic<uint32_t>    generation{0};
     std::atomic<bool>        stop{false};
     std::atomic<int>         nextIndex{0};
     std::atomic<int>         activeWorkers{0};
@@ -71,7 +71,7 @@ struct ThreadPoolState {
 ThreadPoolState g_pool;
 
 void WorkerLoop() {
-    uint64_t localGen = 0;
+    uint32_t localGen = 0;
 
     while (true) {
         bool foundWork = false;

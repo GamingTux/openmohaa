@@ -3909,6 +3909,37 @@ static void CreateInternalShaders( void ) {
     shader.lightmapIndex = LIGHTMAP_NONE;
 	currentShader = FindShaderText(shader.name);
 	tr.shadowShader = FinishShader();
+
+	// Procedural Remaster blood & gore shaders (zero external asset dependencies)
+	{
+		static const char *bloodShaderNames[5] = {
+			"remaster_blood_splat0",
+			"remaster_blood_splat1",
+			"remaster_blood_pool",
+			"remaster_blood_mist",
+			"remaster_gun_smoke"
+		};
+		int b;
+		for ( b = 0; b < 5; b++ ) {
+			if ( !tr.bloodImages[b] )
+				continue;
+			Com_Memset( &shader, 0, sizeof( shader ) );
+			Com_Memset( &unfoggedStages, 0, sizeof( unfoggedStages ) );
+			Q_strncpyz( shader.name, bloodShaderNames[b], sizeof( shader.name ) );
+			shader.lightmapIndex = LIGHTMAP_2D;
+			shader.cullType = CT_TWO_SIDED;
+			shader.polygonOffset = (b < 3) ? qtrue : qfalse;
+			shader.sort = (b < 3) ? SS_DECAL : SS_BLEND1;
+			unfoggedStages[0].bundle[0].image[0] = tr.bloodImages[b];
+			unfoggedStages[0].bundle[0].tcGen = TCGEN_TEXTURE;
+			unfoggedStages[0].active = qtrue;
+			unfoggedStages[0].rgbGen = CGEN_VERTEX;
+			unfoggedStages[0].alphaGen = AGEN_VERTEX;
+			unfoggedStages[0].stateBits = GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
+			currentShader = FindShaderText( shader.name );
+			FinishShader();
+		}
+	}
 }
 
 static void CreateExternalShaders( void ) {

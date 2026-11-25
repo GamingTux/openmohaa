@@ -23,13 +23,26 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_fbo.h"
 #include "tr_dsa.h"
 #include "../renderercommon/tr_threadpool.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+static int64_t R_NowUsec( void ) {
+	static LARGE_INTEGER s_freq;
+	LARGE_INTEGER now;
+	if ( !s_freq.QuadPart ) {
+		QueryPerformanceFrequency( &s_freq );
+	}
+	QueryPerformanceCounter( &now );
+	return s_freq.QuadPart ? (int64_t)( ( now.QuadPart * 1000000LL ) / s_freq.QuadPart ) : 0;
+}
+#else
 #include <time.h>
-
 static int64_t R_NowUsec( void ) {
 	struct timespec ts;
 	clock_gettime( CLOCK_MONOTONIC, &ts );
 	return (int64_t)ts.tv_sec * 1000000LL + (int64_t)( ts.tv_nsec / 1000 );
 }
+#endif
 
 backEndData_t	*backEndData;
 backEndState_t	backEnd;
@@ -353,6 +366,8 @@ qboolean RB_WantOffscreen3D( void ) {
 			|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0))
 			&& !(glRefConfig.framebufferFetch && tr.postFxShader[4].program))
 		|| (r_sharpen && r_sharpen->integer > 0)
+		|| (r_motionBlur && r_motionBlur->value > 0.0f)
+		|| (r_underwaterFx && r_underwaterFx->integer > 0 && (backEnd.refdef.rdflags & RDF_UNDERWATER))
 		|| (r_dynamicResolution && r_dynamicResolution->integer > 0)
 		|| (r_renderScale && r_renderScale->value < 0.999f) )
 	{
@@ -1928,6 +1943,8 @@ const void *RB_PostProcess(const void *data)
 		|| (r_filmicTonemap && r_filmicTonemap->integer > 0)
 		|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0)
 		|| (r_sharpen && r_sharpen->integer > 0)
+		|| (r_motionBlur && r_motionBlur->value > 0.0f)
+		|| (r_underwaterFx && r_underwaterFx->integer > 0 && (backEnd.refdef.rdflags & RDF_UNDERWATER))
 		|| isScaled);
 
 	if (!glRefConfig.framebufferObject || !tr.renderFbo || (!r_postProcess->integer && !wantModernPost))
@@ -1951,7 +1968,9 @@ const void *RB_PostProcess(const void *data)
 
 		if ((r_bloom && r_bloom->integer > 0) || (r_filmicTonemap && r_filmicTonemap->integer > 0)
 			|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0)
-			|| (r_sharpen && r_sharpen->integer > 0))
+			|| (r_sharpen && r_sharpen->integer > 0)
+			|| (r_motionBlur && r_motionBlur->value > 0.0f)
+			|| (r_underwaterFx && r_underwaterFx->integer > 0 && (backEnd.refdef.rdflags & RDF_UNDERWATER)))
 		{
 			RB_ModernPostProcess(tr.renderFbo, srcBox, NULL, dstBox);
 		}
@@ -2002,7 +2021,9 @@ const void *RB_PostProcess(const void *data)
 		else if (wantModernPost && tr.screenScratchFbo)
 		{
 			if ((r_bloom && r_bloom->integer > 0) || (r_filmicTonemap && r_filmicTonemap->integer > 0)
-				|| (r_sharpen && r_sharpen->integer > 0))
+				|| (r_mapAtmosphere && r_mapAtmosphere->integer > 0)
+				|| (r_sharpen && r_sharpen->integer > 0)
+				|| (r_motionBlur && r_motionBlur->value > 0.0f))
 			{
 				RB_ModernPostProcess(srcFbo, srcBox, tr.screenScratchFbo, dstBox);
 			}

@@ -74,8 +74,14 @@ varying vec4      var_PrimaryLightDir;
 uniform vec4      u_WorldReliefLight;   // xyz = base world light dir, w = relief strength
 uniform vec4      u_WorldReliefParams;  // x = spec strength, y = fresnel strength, z = shininess scale, w = trait (>0 metalTint, <0 snowGlint)
 
+  #if defined(USE_WORLD_NH)
+varying vec4      var_TanParallax;      // xy = tangent parallax step * distFade, z = grazing Fresnel * distFade, w = distFade
+varying vec3      var_TanLight;         // tangent-space base world light dir
+varying vec3      var_TanHalf;          // tangent-space Blinn-Phong half vector
+  #else
 varying vec4      var_ReliefLight;      // xy = screen-space tangent light * distFade, z = base N·H, w = distFade
 varying vec3      var_ReliefHalf;       // xy = screen-space tangent half-vec * distFade, z = grazing Fresnel * distFade
+  #endif
 #endif
 
 #if defined(USE_SUN_SHADOW)
@@ -294,6 +300,11 @@ void main()
 	offsetDir.xy *= -u_NormalScale.a / offsetDir.z;
 
 	texCoords += offsetDir.xy * RayIntersectDisplaceMap(texCoords, offsetDir.xy, u_NormalMap);
+#elif defined(USE_WORLD_NH)
+	// Fast 2-step refined Parallax Offset Mapping (R=Nx, G=Ny, B=MicroAO, A=Height; 0 loops, 0 SFU)
+	vec4 nh0 = texture2D(u_NormalMap, texCoords);
+	vec4 nh  = texture2D(u_NormalMap, texCoords + var_TanParallax.xy * (nh0.a - 0.5));
+	texCoords += var_TanParallax.xy * ((nh0.a + nh.a) * 0.5 - 0.5);
 #endif
 
 	vec4 diffuse = texture2D(u_DiffuseMap, texCoords);
@@ -569,7 +580,55 @@ void main()
 	}
   #endif
 
-  #if defined(USE_WORLD_RELIEF)
+  #if defined(USE_WORLD_NH)
+	if (u_WorldReliefLight.w > 0.001)
+	{
+		// Stage 2 + 3: True 3D Tangent-Space Normal Map + Parallax + Baked Crevice Micro-AO + Material Specular/Fresnel (0 SFU!)
+		float dFade = var_TanParallax.w;
+		vec2  nxy   = (nh.rg * 2.0 - vec2(1.0)) * (u_WorldReliefLight.w * 0.48 * (0.25 + 0.75 * dFade));
+		vec3  N     = vec3(nxy, max(1.0 - 0.5 * dot(nxy, nxy), 0.35));
+
+		// Baked crevice Micro-AO (deepens mortar grooves, plank gaps, rivets) + tangent-space directional relief
+		float microAo     = mix(1.0, nh.b, 0.36 * dFade);
+		float reliefDelta = clamp((dot(N, var_TanLight) - var_TanLight.z) * 0.72, -0.26, 0.30);
+		float lightVis    = clamp(lightmapColor.g * 2.5, 0.14, 1.0) * (0.40 + 0.60 * sunShadowVis);
+		vec3  outRgb      = diffuse.rgb * (lightColor * (microAo + reliefDelta * lightVis));
+
+		float lum      = dot(diffuse.rgb, vec3(0.30, 0.59, 0.11));
+		float metalMix = max(u_WorldReliefParams.w, 0.0);
+		vec3  specTint = mix(vec3(1.0), clamp(diffuse.rgb * 1.65 + vec3(0.12), 0.25, 1.35), metalMix);
+
+		if (u_WorldReliefParams.x > 0.001)
+		{
+			float pertNH    = clamp(dot(N, var_TanHalf), 0.0, 1.0);
+			float k         = max(1.0 - (1.0 - pertNH) * u_WorldReliefParams.z, 0.0);
+			float k2        = k * k;
+			float facetMask = clamp(lum * 1.15 * nh.b, 0.08, 1.0);
+			// Keep dry stone/wood naturally matte; reserve crisp highlights for metal/wet/glass
+			float specScale = mix(0.42, 1.15, metalMix);
+			outRgb += lightColor * specTint * (k2 * k2 * u_WorldReliefParams.x * specScale * facetMask * dFade * sunShadowVis);
+		}
+
+		if (u_WorldReliefParams.y > 0.001)
+		{
+			vec3 fresTint = mix(vec3(0.86, 0.92, 1.0), specTint, metalMix);
+			outRgb += lightColor * fresTint * (var_TanParallax.z * u_WorldReliefParams.y * 0.65 * nh.b * (0.35 + 0.65 * sunShadowVis));
+		}
+
+		if (u_WorldReliefParams.w < -0.5)
+		{
+			vec2  sCell = fract(texCoords * 72.0 + var_TanHalf.xy * 1.8);
+			float glint = max(1.0 - dot(abs(sCell - vec2(0.5)), vec2(5.2)), 0.0);
+			outRgb += lightColor * (glint * glint * 0.28 * dFade * sunShadowVis * clamp(lum * 1.4, 0.0, 1.0));
+		}
+
+		gl_FragColor.rgb = outRgb;
+	}
+	else
+	{
+		gl_FragColor.rgb = diffuse.rgb * lightColor;
+	}
+  #elif defined(USE_WORLD_RELIEF)
 	if (u_WorldReliefLight.w > 0.001)
 	{
 		// Material-aware HD micro-relief + crevice depth + metallic/wet/glass Fresnel + snow glint (0 SFU, 0 extra fetches)
