@@ -2709,6 +2709,15 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 				wetSun[2] = 0.45f;
 				VectorNormalize(wetSun);
 			}
+			// Transform world sun direction into entity-local space for wet body wounds on skeletal models
+			if (backEnd.currentEntity && backEnd.currentEntity != &tr.worldEntity)
+			{
+				vec3_t localSun;
+				localSun[0] = DotProduct(wetSun, backEnd.currentEntity->e.axis[0]);
+				localSun[1] = DotProduct(wetSun, backEnd.currentEntity->e.axis[1]);
+				localSun[2] = DotProduct(wetSun, backEnd.currentEntity->e.axis[2]);
+				VectorCopy(localSun, wetSun);
+			}
 			wetSun[3] = 0.0f;
 			GLSL_SetUniformVec4(sp, UNIFORM_SUNSHADOWDIR, wetSun);
 		}
@@ -3376,6 +3385,10 @@ void RB_StageIteratorGeneric( void )
 	if ( input->shader->polygonOffset )
 	{
 		qglEnable( GL_POLYGON_OFFSET_FILL );
+		if ( input->shader == tr.bloodWoundShader )
+		{
+			qglPolygonOffset( -4.0f, -16.0f );
+		}
 	}
 
 	//
@@ -3465,6 +3478,10 @@ void RB_StageIteratorGeneric( void )
 	//
 	if ( input->shader->polygonOffset )
 	{
+		if ( input->shader == tr.bloodWoundShader )
+		{
+			qglPolygonOffset( r_offsetFactor->value, r_offsetUnits->value );
+		}
 		qglDisable( GL_POLYGON_OFFSET_FILL );
 	}
 }

@@ -394,6 +394,7 @@ extern "C" {
         qhandle_t     bloodSplatShaders[2];
         qhandle_t     bloodPoolShader;
         qhandle_t     bloodMistShader;
+        qhandle_t     bloodWoundShader;
         qhandle_t     gunSmokeShader;
         qhandle_t     pausedShader;
         qhandle_t     levelExitShader;

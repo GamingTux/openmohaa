@@ -2147,14 +2147,533 @@ static cgGoreParticle_t *CG_AllocGoreParticle(void)
     return p;
 }
 
+#define MAX_BODY_WOUNDS            96
+#define MAX_BODY_WOUNDS_PER_ENTITY 6
+
+typedef struct {
+    qboolean active;
+    qboolean bound;
+    qboolean fromPlayerRay;
+    int      entityNum;
+    dtiki_t *tiki;
+    int      tagNum;
+    vec3_t   localPos;      // bone-local once bound; world hit pos while pending
+    vec3_t   localNorm;     // bone-local once bound; world hit normal while pending
+    vec3_t   lastEntOrigin; // detects MP respawn/teleport on same entity slot
+    float    rotAng;
+    float    baseRadius;
+    int      startTime;
+    int      lifeTime;
+    int      lastSeenTime;
+    byte     rgb[3];
+} cgBodyWound_t;
+
+static cgBodyWound_t s_bodyWounds[MAX_BODY_WOUNDS];
+static int           s_bodyWoundNext = 0;
+
+static const char *s_bodyWoundBones[] = {
+    "Bip01 Pelvis",
+    "Bip01 Spine",
+    "Bip01 Spine1",
+    "Bip01 Spine2",
+    "Bip01 Neck",
+    "Bip01 Head",
+    "Bip01 L Clavicle",
+    "Bip01 R Clavicle",
+    "Bip01 L UpperArm",
+    "Bip01 R UpperArm",
+    "Bip01 L Forearm",
+    "Bip01 R Forearm",
+    "Bip01 L Thigh",
+    "Bip01 R Thigh",
+    "Bip01 L Calf",
+    "Bip01 R Calf"
+};
+
+static void CG_GetBoneWorldTransform(refEntity_t *pModel, int tagNum, vec3_t outOrigin, vec3_t outAxis[3])
+{
+    orientation_t oTag;
+    int           k;
+
+    oTag = cgi.TIKI_Orientation(pModel, tagNum);
+    VectorCopy(pModel->origin, outOrigin);
+    for (k = 0; k < 3; k++) {
+        VectorMA(outOrigin, oTag.origin[k], pModel->axis[k], outOrigin);
+    }
+    R_ConcatRotations(oTag.axis, pModel->axis, outAxis);
+}
+
+static void CG_QueueBodyWound(const vec3_t pos, const vec3_t norm, qboolean large, const byte litRgb[3])
+{
+    cgBodyWound_t *w;
+
+    if (!cgs.media.bloodWoundShader) {
+        return;
+    }
+
+    w = &s_bodyWounds[s_bodyWoundNext];
+    s_bodyWoundNext = (s_bodyWoundNext + 1) % MAX_BODY_WOUNDS;
+    memset(w, 0, sizeof(*w));
+    w->active        = qtrue;
+    w->bound         = qfalse;
+    w->fromPlayerRay = qfalse;
+    w->entityNum     = -1;
+    VectorCopy(pos, w->localPos);
+    // Prefer exact bullet line-of-sight when player just fired (avoids boxy SOLID_BBOX +-X/+-Y/+-Z projection)
+    if ((cg.time - cg.lastFireTime) >= 0 && (cg.time - cg.lastFireTime) <= 220) {
+        vec3_t toHit;
+        float  dist;
+        VectorSubtract(pos, cg.refdef.vieworg, toHit);
+        dist = VectorNormalize(toHit);
+        if (dist > 24.0f && DotProduct(toHit, cg.refdef.viewaxis[0]) > 0.85f) {
+            VectorNegate(toHit, w->localNorm);
+            w->fromPlayerRay = qtrue;
+        }
+    }
+    if (!w->fromPlayerRay) {
+        // cg_parsemsg.cpp negates flesh_impact_norm for exit-spray; invert back to outward normal
+        VectorNegate(norm, w->localNorm);
+    }
+    w->rotAng       = CG_GoreRand01() * 6.2831853f;
+    w->baseRadius   = large ? (2.9f + CG_GoreRand01() * 0.7f) : (2.2f + CG_GoreRand01() * 0.6f);
+    w->startTime    = cg.time;
+    w->lifeTime     = 45000;
+    w->lastSeenTime = cg.time;
+    w->rgb[0]       = litRgb[0];
+    w->rgb[1]       = litRgb[1];
+    w->rgb[2]       = litRgb[2];
+}
+
+static qboolean CG_BindPendingBodyWound(cgBodyWound_t *w)
+{
+    int          bestEnt = -1;
+    int          bestTag = -1;
+    int          bestBoneIdx = -1;
+    float        bestDistSq = 28.0f * 28.0f;
+    vec3_t       bestBoneOrg;
+    vec3_t       bestBoneAxis[3];
+    refEntity_t *bestModel = NULL;
+    int          i, b;
+    int          clientNum;
+
+    if (!cg.snap) {
+        return qfalse;
+    }
+    clientNum = cg.snap->ps.clientNum;
+
+    // Evaluate all visible snapshot entities + trace candidate for closest skeletal Bip01 bone
+    for (i = -1; i < cg.snap->numEntities; i++) {
+        int          entNum;
+        refEntity_t *pModel;
+        vec3_t       toEnt;
+
+        if (i < 0) {
+            trace_t tr;
+            vec3_t  sPos, ePos;
+            VectorMA(w->localPos, 14.0f, w->localNorm, sPos);
+            VectorMA(w->localPos, -22.0f, w->localNorm, ePos);
+            CG_Trace(&tr, sPos, vec3_origin, vec3_origin, ePos, clientNum, MASK_SHOT, qfalse, qfalse, "CG_BodyWoundBind");
+            if (tr.fraction >= 1.0f || tr.entityNum == ENTITYNUM_WORLD || tr.entityNum < 0 || tr.entityNum >= MAX_GENTITIES) {
+                continue;
+            }
+            entNum = tr.entityNum;
+        } else {
+            entNum = cg.snap->entities[i].number;
+        }
+
+        if (entNum == clientNum || entNum < 0 || entNum >= MAX_GENTITIES) {
+            continue;
+        }
+
+        pModel = cgi.R_GetRenderEntity(entNum);
+        if (!pModel || !pModel->tiki || (pModel->renderfx & (RF_FIRST_PERSON | RF_DONTDRAW | RF_INVISIBLE))) {
+            continue;
+        }
+
+        VectorSubtract(w->localPos, pModel->origin, toEnt);
+        if (toEnt[0] * toEnt[0] + toEnt[1] * toEnt[1] > 64.0f * 64.0f
+            || toEnt[2] < -24.0f || toEnt[2] > 96.0f) {
+            continue;
+        }
+
+        for (b = 0; b < (int)ARRAY_LEN(s_bodyWoundBones); b++) {
+            int    tagNum = cgi.Tag_NumForName(pModel->tiki, s_bodyWoundBones[b]);
+            vec3_t bOrg, bAxis[3], diff;
+            float  d2;
+
+            if (tagNum < 0) {
+                continue;
+            }
+            CG_GetBoneWorldTransform(pModel, tagNum, bOrg, bAxis);
+            VectorSubtract(w->localPos, bOrg, diff);
+            d2 = VectorLengthSquared(diff);
+            if (d2 < bestDistSq) {
+                bestDistSq  = d2;
+                bestEnt     = entNum;
+                bestTag     = tagNum;
+                bestBoneIdx = b;
+                bestModel   = pModel;
+                VectorCopy(bOrg, bestBoneOrg);
+                AxisCopy(bAxis, bestBoneAxis);
+            }
+        }
+    }
+
+    if (bestEnt < 0 || bestTag < 0 || !bestModel) {
+        return qfalse;
+    }
+
+    // Cap wounds per entity by retiring the oldest wound on this soldier
+    {
+        int count = 0;
+        int oldestIdx = -1;
+        int oldestTime = 0x7fffffff;
+        for (i = 0; i < MAX_BODY_WOUNDS; i++) {
+            if (s_bodyWounds[i].active && s_bodyWounds[i].bound && s_bodyWounds[i].entityNum == bestEnt && &s_bodyWounds[i] != w) {
+                count++;
+                if (s_bodyWounds[i].startTime < oldestTime) {
+                    oldestTime = s_bodyWounds[i].startTime;
+                    oldestIdx  = i;
+                }
+            }
+        }
+        if (count >= MAX_BODY_WOUNDS_PER_ENTITY && oldestIdx >= 0) {
+            s_bodyWounds[oldestIdx].active = qfalse;
+        }
+    }
+
+    // Store hit position and normal in bone-local space so wound tracks all animations
+    {
+        vec3_t delta, projNorm, lPos, lNorm;
+        VectorSubtract(w->localPos, bestBoneOrg, delta);
+        VectorCopy(w->localNorm, projNorm);
+        // For AI/non-player shots, blend radial bone->hit direction to avoid boxy SOLID_BBOX axis normals
+        if (!w->fromPlayerRay) {
+            vec3_t radDir;
+            VectorCopy(delta, radDir);
+            if (VectorNormalize(radDir) > 0.5f) {
+                projNorm[0] = radDir[0] * 0.65f + projNorm[0] * 0.35f;
+                projNorm[1] = radDir[1] * 0.65f + projNorm[1] * 0.35f;
+                projNorm[2] = radDir[2] * 0.65f + projNorm[2] * 0.35f;
+                VectorNormalize(projNorm);
+            }
+        }
+        lPos[0]  = DotProduct(delta, bestBoneAxis[0]);
+        lPos[1]  = DotProduct(delta, bestBoneAxis[1]);
+        lPos[2]  = DotProduct(delta, bestBoneAxis[2]);
+        lNorm[0] = DotProduct(projNorm, bestBoneAxis[0]);
+        lNorm[1] = DotProduct(projNorm, bestBoneAxis[1]);
+        lNorm[2] = DotProduct(projNorm, bestBoneAxis[2]);
+        if (VectorNormalize(lNorm) < 0.001f) {
+            VectorSet(lNorm, 1.0f, 0.0f, 0.0f);
+        }
+        VectorCopy(lPos, w->localPos);
+        VectorCopy(lNorm, w->localNorm);
+    }
+
+    // Scale wound radius strictly to anatomical body zone (soldier head is only ~8-9 units wide)
+    if (bestBoneIdx == 4 || bestBoneIdx == 5) {
+        w->baseRadius *= 0.45f; // Head / Neck: crisp bullet entry hole + small cheek/forehead stain
+    } else if ((bestBoneIdx >= 6 && bestBoneIdx <= 11) || bestBoneIdx >= 14) {
+        w->baseRadius *= 0.72f; // Arms / Forearms / Calves
+    }
+
+    w->entityNum    = bestEnt;
+    w->tiki         = bestModel->tiki;
+    w->tagNum       = bestTag;
+    w->bound        = qtrue;
+    w->lastSeenTime = cg.time;
+    VectorCopy(bestModel->origin, w->lastEntOrigin);
+    return qtrue;
+}
+
+static void CG_AddBodyWounds(void)
+{
+    int        i;
+    polyVert_t verts[4];
+
+    if (!cg_gore || cg_gore->integer <= 0 || !cgs.media.bloodWoundShader) {
+        return;
+    }
+
+    for (i = 0; i < MAX_BODY_WOUNDS; i++) {
+        cgBodyWound_t *w = &s_bodyWounds[i];
+        refEntity_t   *pModel;
+        vec3_t         bOrg, bAxis[3], wPos, wNorm, u0, v0, axU, axV, entDelta;
+        int            age;
+        float          seepT, radius, alpha, ca, sa;
+        byte           aByte;
+
+        if (!w->active) {
+            continue;
+        }
+        if (cg.time < w->startTime || (cg.time - w->startTime) >= w->lifeTime) {
+            w->active = qfalse;
+            continue;
+        }
+
+        if (!w->bound) {
+            if (!CG_BindPendingBodyWound(w)) {
+                // Retry next frame briefly if entity snapshot arrived a tick later, else discard
+                if (cg.time - w->startTime > 120) {
+                    w->active = qfalse;
+                }
+                continue;
+            }
+        }
+
+        pModel = cgi.R_GetRenderEntity(w->entityNum);
+        if (!pModel || pModel->tiki != w->tiki || (pModel->renderfx & (RF_FIRST_PERSON | RF_DONTDRAW | RF_INVISIBLE))) {
+            if (cg.time - w->lastSeenTime > 1200) {
+                w->active = qfalse;
+            }
+            continue;
+        }
+
+        // Detect entity slot respawn/teleport (e.g. multiplayer respawn)
+        VectorSubtract(pModel->origin, w->lastEntOrigin, entDelta);
+        if (VectorLengthSquared(entDelta) > 128.0f * 128.0f) {
+            w->active = qfalse;
+            continue;
+        }
+        VectorCopy(pModel->origin, w->lastEntOrigin);
+        w->lastSeenTime = cg.time;
+
+        CG_GetBoneWorldTransform(pModel, w->tagNum, bOrg, bAxis);
+
+        // Transform bone-local wound back to current animated world pose
+        VectorCopy(bOrg, wPos);
+        VectorMA(wPos, w->localPos[0], bAxis[0], wPos);
+        VectorMA(wPos, w->localPos[1], bAxis[1], wPos);
+        VectorMA(wPos, w->localPos[2], bAxis[2], wPos);
+
+        VectorClear(wNorm);
+        VectorMA(wNorm, w->localNorm[0], bAxis[0], wNorm);
+        VectorMA(wNorm, w->localNorm[1], bAxis[1], wNorm);
+        VectorMA(wNorm, w->localNorm[2], bAxis[2], wNorm);
+        if (VectorNormalize(wNorm) < 0.001f) {
+            VectorSet(wNorm, 0.0f, 0.0f, 1.0f);
+        }
+
+        // Bloodstain gradually soaks outward into uniform over first 1.6s, dries/fades in last 20%
+        age = cg.time - w->startTime;
+        seepT = (float)age / 1600.0f;
+        if (seepT > 1.0f) {
+            seepT = 1.0f;
+        }
+        radius = w->baseRadius * (0.68f + 0.32f * (seepT * (2.0f - seepT)));
+
+        alpha = 0.94f;
+        if (age < 120) {
+            alpha *= (0.45f + 0.55f * ((float)age / 120.0f));
+        } else {
+            float lifeFrac = (float)age / (float)w->lifeTime;
+            if (lifeFrac > 0.80f) {
+                alpha *= (1.0f - lifeFrac) * 5.0f;
+            }
+        }
+        if (alpha <= 0.01f) {
+            continue;
+        }
+        aByte = (byte)(Com_Clamp(0.0f, 1.0f, alpha) * 255.0f);
+
+        // Right-handed tangent basis: CrossProduct(axU, axV) == +wNorm
+        PerpendicularVector(u0, wNorm);
+        CrossProduct(wNorm, u0, v0);
+        ca = cosf(w->rotAng);
+        sa = sinf(w->rotAng);
+        VectorScale(u0, ca * radius, axU);
+        VectorMA(axU, sa * radius, v0, axU);
+        VectorScale(u0, -sa * radius, axV);
+        VectorMA(axV, ca * radius, v0, axV);
+
+        verts[0].xyz[0] = wPos[0] - axU[0] - axV[0];
+        verts[0].xyz[1] = wPos[1] - axU[1] - axV[1];
+        verts[0].xyz[2] = wPos[2] - axU[2] - axV[2];
+        verts[0].st[0]  = 0.0f;
+        verts[0].st[1]  = 0.0f;
+
+        verts[1].xyz[0] = wPos[0] + axU[0] - axV[0];
+        verts[1].xyz[1] = wPos[1] + axU[1] - axV[1];
+        verts[1].xyz[2] = wPos[2] + axU[2] - axV[2];
+        verts[1].st[0]  = 1.0f;
+        verts[1].st[1]  = 0.0f;
+
+        verts[2].xyz[0] = wPos[0] + axU[0] + axV[0];
+        verts[2].xyz[1] = wPos[1] + axU[1] + axV[1];
+        verts[2].xyz[2] = wPos[2] + axU[2] + axV[2];
+        verts[2].st[0]  = 1.0f;
+        verts[2].st[1]  = 1.0f;
+
+        verts[3].xyz[0] = wPos[0] - axU[0] + axV[0];
+        verts[3].xyz[1] = wPos[1] - axU[1] + axV[1];
+        verts[3].xyz[2] = wPos[2] - axU[2] + axV[2];
+        verts[3].st[0]  = 0.0f;
+        verts[3].st[1]  = 1.0f;
+
+        // Premultiplied fade for GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA cloth-soak blend (inherits 100% live entity lighting)
+        verts[0].modulate[0] = verts[1].modulate[0] = verts[2].modulate[0] = verts[3].modulate[0] = aByte;
+        verts[0].modulate[1] = verts[1].modulate[1] = verts[2].modulate[1] = verts[3].modulate[1] = aByte;
+        verts[0].modulate[2] = verts[1].modulate[2] = verts[2].modulate[2] = verts[3].modulate[2] = aByte;
+        verts[0].modulate[3] = verts[1].modulate[3] = verts[2].modulate[3] = verts[3].modulate[3] = aByte;
+
+        cgi.R_AddPolyToScene(cgs.media.bloodWoundShader, 4, verts, RF_BODY_WOUND | (w->entityNum & 0x3FF));
+    }
+}
+
+typedef struct {
+    int      deadSince;
+    qboolean pooled;
+    dtiki_t *tiki;
+    vec3_t   lastOrigin;
+} cgCorpsePool_t;
+
+static cgCorpsePool_t s_corpsePools[MAX_GENTITIES];
+static int            s_corpsePoolScanTime = 0;
+
+static void CG_PlaceBloodDecal(
+    qhandle_t    shader,
+    const vec3_t origin,
+    const vec3_t normal,
+    float        radius,
+    float        alpha,
+    qboolean     fadein
+);
+
+static void CG_UpdateCorpseBloodPools(void)
+{
+    int i, goreLevel;
+
+    if (!cg_gore || cg_gore->integer <= 0 || !cgs.media.bloodPoolShader || !cg.snap) {
+        return;
+    }
+
+    if (s_corpsePoolScanTime > 0 && cg.time >= s_corpsePoolScanTime && (cg.time - s_corpsePoolScanTime) < 200) {
+        return;
+    }
+    s_corpsePoolScanTime = cg.time;
+    goreLevel            = (cg_gore->integer >= 2) ? 2 : 1;
+
+    for (i = 0; i < cg.snap->numEntities; i++) {
+        const entityState_t *s1 = &cg.snap->entities[i];
+        int                  entNum = s1->number;
+        cgCorpsePool_t      *cp;
+        refEntity_t         *pModel;
+        vec3_t               torsoPos, start, downEnd, delta;
+        trace_t              tr;
+        int                  tagNum, j;
+
+        if (entNum < 0 || entNum >= MAX_GENTITIES || entNum == cg.snap->ps.clientNum) {
+            continue;
+        }
+
+        cp = &s_corpsePools[entNum];
+        if (!(s1->eFlags & EF_DEAD)) {
+            if (cp->deadSince > 0) {
+                memset(cp, 0, sizeof(*cp));
+            }
+            continue;
+        }
+
+        pModel = cgi.R_GetRenderEntity(entNum);
+        if (!pModel || !pModel->tiki || (pModel->renderfx & (RF_FIRST_PERSON | RF_DONTDRAW | RF_INVISIBLE))) {
+            continue;
+        }
+
+        if (cp->deadSince <= 0 || cg.time < cp->deadSince || cp->tiki != pModel->tiki) {
+            cp->deadSince = cg.time;
+            cp->pooled    = qfalse;
+            cp->tiki      = pModel->tiki;
+            VectorCopy(pModel->origin, cp->lastOrigin);
+            continue;
+        }
+
+        VectorSubtract(pModel->origin, cp->lastOrigin, delta);
+        if (VectorLengthSquared(delta) > 128.0f * 128.0f) {
+            cp->deadSince = cg.time;
+            cp->pooled    = qfalse;
+            VectorCopy(pModel->origin, cp->lastOrigin);
+            continue;
+        }
+        VectorCopy(pModel->origin, cp->lastOrigin);
+
+        if (cp->pooled) {
+            continue;
+        }
+
+        // Wait ~850ms so collapsing soldiers settle onto the ground before the blood pool seeps out beneath their torso
+        if ((cg.time - cp->deadSince) < 850) {
+            continue;
+        }
+
+        // Locate actual fallen torso bone (falls up to 2m away from standing entity origin during death anim)
+        tagNum = cgi.Tag_NumForName(pModel->tiki, "Bip01 Spine1");
+        if (tagNum < 0) {
+            tagNum = cgi.Tag_NumForName(pModel->tiki, "Bip01 Pelvis");
+        }
+        if (tagNum >= 0) {
+            vec3_t bAxis[3];
+            CG_GetBoneWorldTransform(pModel, tagNum, torsoPos, bAxis);
+        } else {
+            VectorCopy(pModel->origin, torsoPos);
+            torsoPos[2] += 10.0f;
+        }
+
+        // Skip only deep ocean water (>22u above fallen torso), allowing wet shoreline sand on Omaha Beach
+        {
+            vec3_t waterCheck;
+            VectorCopy(torsoPos, waterCheck);
+            waterCheck[2] += 22.0f;
+            if (CG_PointContents(waterCheck, -1) & CONTENTS_WATER) {
+                cp->pooled = qtrue;
+                continue;
+            }
+        }
+
+        VectorCopy(torsoPos, start);
+        start[2] += 16.0f;
+        VectorCopy(torsoPos, downEnd);
+        downEnd[2] -= 48.0f;
+
+        CG_Trace(&tr, start, vec3_origin, vec3_origin, downEnd, entNum, MASK_SOLID, qfalse, qfalse, "CG_CorpseBloodPool");
+        if (tr.fraction < 1.0f && !tr.startsolid && tr.plane.normal[2] > 0.58f && !(tr.surfaceFlags & SURF_SKY)) {
+            qboolean tooClose = qfalse;
+            for (j = 0; j < 4; j++) {
+                if (s_gorePoolTime[j] > 0 && (cg.time - s_gorePoolTime[j]) < 5000) {
+                    vec3_t d;
+                    VectorSubtract(tr.endpos, s_gorePoolPos[j], d);
+                    if (DotProduct(d, d) < (16.0f * 16.0f)) {
+                        tooClose = qtrue;
+                        break;
+                    }
+                }
+            }
+
+            if (!tooClose) {
+                float poolRadius = (14.5f + CG_GoreRand01() * 6.5f) * (goreLevel >= 2 ? 1.25f : 1.0f);
+                VectorCopy(tr.endpos, s_gorePoolPos[s_gorePoolNext]);
+                s_gorePoolTime[s_gorePoolNext] = cg.time;
+                s_gorePoolNext = (s_gorePoolNext + 1) & 3;
+                CG_PlaceBloodDecal(cgs.media.bloodPoolShader, tr.endpos, tr.plane.normal, poolRadius, 0.88f, qtrue);
+            }
+        }
+
+        cp->pooled = qtrue;
+    }
+}
+
 void CG_InitGore(void)
 {
     memset(s_goreParticles, 0, sizeof(s_goreParticles));
     memset(s_gorePoolPos, 0, sizeof(s_gorePoolPos));
     memset(s_gorePoolTime, 0, sizeof(s_gorePoolTime));
-    s_goreNextSlot = 0;
-    s_goreLastTime = 0;
-    s_gorePoolNext = 0;
+    memset(s_bodyWounds, 0, sizeof(s_bodyWounds));
+    memset(s_corpsePools, 0, sizeof(s_corpsePools));
+    s_goreNextSlot       = 0;
+    s_goreLastTime       = 0;
+    s_gorePoolNext       = 0;
+    s_bodyWoundNext      = 0;
+    s_corpsePoolScanTime = 0;
 }
 
 static void CG_PlaceBloodDecal(
@@ -2239,6 +2758,9 @@ void CG_SpawnBloodImpact(const vec3_t pos, const vec3_t norm, qboolean large)
 
     VectorSubtract(pos, cg.refdef.vieworg, toCam);
     camDist = VectorLength(toCam);
+
+    // 0. Queue bone-tracked entry wound + spreading bloodstain on the struck soldier's body
+    CG_QueueBodyWound(pos, n, large, litRgb);
 
     // 1. Expanding fine arterial blood mist puffs (skip directly inside camera eye)
     if (cgs.media.bloodMistShader && camDist > 28.0f) {
@@ -2522,6 +3044,10 @@ void CG_AddGoreParticles(void)
         s_goreLastTime = cg.time;
         return;
     }
+
+    CG_AddBodyWounds();
+    CG_UpdateCorpseBloodPools();
+
     if (!cgs.media.bloodMistShader && !cgs.media.gunSmokeShader) {
         s_goreLastTime = cg.time;
         return;

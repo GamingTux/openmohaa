@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_image.c
 #include "tr_local.h"
 #include "../renderercommon/tr_gore_tex.h"
+#include "../renderercommon/tr_ktx_astc.h"
 
 #include <setjmp.h>
 
@@ -170,6 +171,7 @@ void R_ImageList_f( void ) {
 	int		i;
 	image_t	*image;
 	int		texels;
+	long long totalBytes = 0;
 	const char *yesno[] = {
 		"no ", "yes"
 	};
@@ -181,8 +183,13 @@ void R_ImageList_f( void ) {
 		image = &tr.images[ i ];
 
 		texels += image->uploadWidth*image->uploadHeight;
+		if (R_ASTCBlockDims((GLenum)image->internalFormat, NULL, NULL)) {
+			totalBytes += image->bytesUsed;
+		} else {
+			totalBytes += image->numMipmaps ? ((long long)image->bytesUsed * 4) / 3 : image->bytesUsed;
+		}
 		ri.Printf (PRINT_ALL,  "%4i: %4i %4i  %s   %d   ",
-			i, image->uploadWidth, image->uploadHeight, yesno[image->numMipmaps], image->TMU );
+			i, image->uploadWidth, image->uploadHeight, yesno[image->numMipmaps ? 1 : 0], image->TMU );
 		switch ( image->internalFormat ) {
 		case 1:
 			ri.Printf( PRINT_ALL, "I    " );
@@ -212,7 +219,11 @@ void R_ImageList_f( void ) {
 			ri.Printf( PRINT_ALL, "RGB5 " );
 			break;
 		default:
-			ri.Printf( PRINT_ALL, "???? " );
+			if (R_ASTCBlockDims((GLenum)image->internalFormat, NULL, NULL)) {
+				ri.Printf( PRINT_ALL, "%s", R_ASTCFormatName((GLenum)image->internalFormat) );
+			} else {
+				ri.Printf( PRINT_ALL, "???? " );
+			}
 		}
 
 		switch ( image->wrapClampModeX ) {
@@ -231,6 +242,7 @@ void R_ImageList_f( void ) {
 	}
 	ri.Printf (PRINT_ALL, " ---------\n");
 	ri.Printf (PRINT_ALL, " %i total texels (not including mipmaps)\n", texels);
+	ri.Printf (PRINT_ALL, " approx %lld bytes (%.1f MB) total texture memory\n", totalBytes, (double)totalBytes / 1048576.0);
 	ri.Printf (PRINT_ALL, " %i total images\n\n", tr.numImages );
 }
 
@@ -730,6 +742,72 @@ static void UploadCompressed(
 
 	offset = data;
 	iStartImage = 0;
+
+	if (R_ASTCBlockDims((GLenum)glCompressMode, NULL, NULL)) {
+		qboolean useMips;
+		int levelsToUpload, m;
+
+		if (picmip && r_picmip->integer > 0) {
+			iStartImage = r_picmip->integer;
+		}
+		if (iMipmapsAvailable < 1) {
+			iMipmapsAvailable = 1;
+		}
+		if (iStartImage >= iMipmapsAvailable) {
+			iStartImage = iMipmapsAvailable - 1;
+		}
+
+		scaled_width = width;
+		scaled_height = height;
+		for (i = 0; i < iStartImage; i++) {
+			offset += R_ASTCMipSize(scaled_width, scaled_height, (GLenum)glCompressMode);
+			scaled_width  = (scaled_width  > 1) ? (scaled_width  >> 1) : 1;
+			scaled_height = (scaled_height > 1) ? (scaled_height >> 1) : 1;
+		}
+		while ((scaled_width > glConfig.maxTextureSize || scaled_height > glConfig.maxTextureSize)
+			&& iStartImage + 1 < iMipmapsAvailable) {
+			offset += R_ASTCMipSize(scaled_width, scaled_height, (GLenum)glCompressMode);
+			scaled_width  = (scaled_width  > 1) ? (scaled_width  >> 1) : 1;
+			scaled_height = (scaled_height > 1) ? (scaled_height >> 1) : 1;
+			iStartImage++;
+		}
+
+		*pUploadWidth  = scaled_width;
+		*pUploadHeight = scaled_height;
+		*format        = glCompressMode;
+		*pBytesUsed    = 0;
+
+		useMips = (numMipmaps > 0 && (iMipmapsAvailable - iStartImage) > 1) ? qtrue : qfalse;
+		levelsToUpload = useMips ? (iMipmapsAvailable - iStartImage) : 1;
+
+		for (m = 0; m < levelsToUpload; m++) {
+			size = R_ASTCMipSize(scaled_width, scaled_height, (GLenum)glCompressMode);
+			*pBytesUsed += size;
+			qglCompressedTexImage2D(GL_TEXTURE_2D, m, (GLenum)glCompressMode, scaled_width, scaled_height, 0, size, offset);
+			offset += size;
+			scaled_width  = (scaled_width  > 1) ? (scaled_width  >> 1) : 1;
+			scaled_height = (scaled_height > 1) ? (scaled_height >> 1) : 1;
+		}
+
+		if (useMips) {
+			if (textureFilterAnisotropic) {
+				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT,
+					(GLint)Com_Clamp(1, maxAnisotropy, r_ext_max_anisotropy->integer));
+			}
+			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_min);
+			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
+		} else {
+			if (textureFilterAnisotropic) {
+				qglTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, 1);
+			}
+			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		}
+
+		GL_CheckErrors();
+		return;
+	}
+
 	if (picmip > 0) {
 		iStartImage = picmip;
 	}
@@ -2524,11 +2602,31 @@ image_t* R_FindImageFileOld(const char* name, qboolean mipmap, qboolean allowPic
 	}
 
 	//
-	// load the pic from disk
+	// load the pic from disk (try native hardware ASTC .ktx first when supported)
 	//
+	pic = NULL;
+	width = height = 0;
+	hasAlpha = qfalse;
+	glCompressMode = 0;
 	numMipmaps = mipmap;
 	iMipmapsAvailable = 0;
-	R_LoadImage(name, &pic, &width, &height, &hasAlpha, &glCompressMode, &numMipmaps, &iMipmapsAvailable);
+
+	if (tr.astcAvailable) {
+		GLenum astcFormat = 0;
+		if (R_LoadKTX1_ASTC(name, &pic, &width, &height, &astcFormat, &iMipmapsAvailable, &hasAlpha)) {
+			glCompressMode = (int)astcFormat;
+			numMipmaps = (mipmap && iMipmapsAvailable > 1) ? 1 : 0;
+			if (tr.registered) {
+				char tempName[MAX_STRING_TOKENS + 1];
+				Com_sprintf(tempName, sizeof(tempName), "n%s", name);
+				ri.UI_LoadResource(tempName);
+			}
+		}
+	}
+
+	if (!pic) {
+		R_LoadImage(name, &pic, &width, &height, &hasAlpha, &glCompressMode, &numMipmaps, &iMipmapsAvailable);
+	}
 	if (pic == NULL) {
 		return NULL;
 	}
@@ -2750,16 +2848,17 @@ void R_CreateBuiltinImages(void) {
 	R_CreateDlightImage();
 
 	{
-		static const char *bloodNames[5] = {
+		static const char *bloodNames[6] = {
 			"*remaster_blood_splat0",
 			"*remaster_blood_splat1",
 			"*remaster_blood_pool",
 			"*remaster_blood_mist",
-			"*remaster_gun_smoke"
+			"*remaster_gun_smoke",
+			"*remaster_blood_wound"
 		};
 		byte *bloodBuf = ri.Hunk_AllocateTempMemory(REMASTER_BLOOD_TEX_SIZE * REMASTER_BLOOD_TEX_SIZE * 4);
 		int b;
-		for (b = 0; b < 5; b++)
+		for (b = 0; b < 6; b++)
 		{
 			R_GenerateBloodTexture(b, bloodBuf);
 			tr.bloodImages[b] = R_CreateImageOld(

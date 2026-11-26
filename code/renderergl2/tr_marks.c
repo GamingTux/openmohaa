@@ -252,6 +252,133 @@ void R_AddMarkFragments(int numClipPoints, vec3_t clipPoints[2][MAX_VERTS_ON_POL
 
 /*
 =================
+R_AddMarkFragmentsToTerrain
+Projects decals/blood pools/craters onto OpenMoHAA 8x8 heightmap terrain patches
+=================
+*/
+static void R_AddMarkFragmentsToTerrain(
+	cTerraPatchUnpacked_t *pTerPatch,
+	int numPlanes,
+	vec3_t *normals,
+	float *dists,
+	int maxPoints,
+	vec3_t pointBuffer,
+	int maxFragments,
+	markFragment_t *fragmentBuffer,
+	int *returnedPoints,
+	int *returnedFragments,
+	vec3_t mins,
+	vec3_t maxs
+) {
+	int i, j, iType, iFirstFragment, patchIndex;
+	int iMin, iMax, jMin, jMax;
+	vec3_t v[4];
+	vec3_t clipPoints[2][MAX_VERTS_ON_POLY];
+
+	if (pTerPatch->shader
+		&& (pTerPatch->shader->surfaceFlags & (SURF_NOIMPACT | SURF_NOMARKS))) {
+		return;
+	}
+
+	// Fast AABB overlap check against 512x512 terrain patch
+	if (maxs[0] < pTerPatch->x0 || mins[0] > pTerPatch->x0 + 512.0f
+		|| maxs[1] < pTerPatch->y0 || mins[1] > pTerPatch->y0 + 512.0f
+		|| maxs[2] < pTerPatch->z0 - 32.0f || mins[2] > pTerPatch->zmax + 32.0f) {
+		return;
+	}
+
+	// Clamp to only the 64x64 terrain cells overlapping the mark bounds
+	iMin = (int)floorf((mins[0] - pTerPatch->x0) * (1.0f / 64.0f));
+	iMax = (int)floorf((maxs[0] - pTerPatch->x0) * (1.0f / 64.0f));
+	jMin = (int)floorf((mins[1] - pTerPatch->y0) * (1.0f / 64.0f));
+	jMax = (int)floorf((maxs[1] - pTerPatch->y0) * (1.0f / 64.0f));
+	if (iMin < 0) iMin = 0;
+	if (iMax > 7) iMax = 7;
+	if (jMin < 0) jMin = 0;
+	if (jMax > 7) jMax = 7;
+	if (iMin > iMax || jMin > jMax) {
+		return;
+	}
+
+	patchIndex     = (int)(pTerPatch - tr.world->terraPatches);
+	iFirstFragment = *returnedFragments;
+
+	// Widen projection depth planes slightly for sloping terrain cells (matches GL1)
+	dists[numPlanes - 2] -= 96.0f;
+	dists[numPlanes - 1] -= 108.0f;
+
+	for (j = jMin; j <= jMax && *returnedFragments < maxFragments; j++) {
+		for (i = iMin; i <= iMax && *returnedFragments < maxFragments; i++) {
+			const unsigned char *pubHeight = pTerPatch->heightmap + j * 9 + i;
+			iType = ri.CM_TerrainSquareType(patchIndex, i, j);
+			if (!iType) {
+				continue;
+			}
+
+			v[0][0] = (float)(i << 6) + pTerPatch->x0;
+			v[0][1] = (float)(j << 6) + pTerPatch->y0;
+			v[0][2] = (float)(pubHeight[0] << 1) + pTerPatch->z0;
+
+			v[1][0] = v[0][0] + 64.0f;
+			v[1][1] = v[0][1];
+			v[1][2] = (float)(pubHeight[1] << 1) + pTerPatch->z0;
+
+			v[2][0] = v[0][0] + 64.0f;
+			v[2][1] = v[0][1] + 64.0f;
+			v[2][2] = (float)(pubHeight[10] << 1) + pTerPatch->z0;
+
+			v[3][0] = v[0][0];
+			v[3][1] = v[0][1] + 64.0f;
+			v[3][2] = (float)(pubHeight[9] << 1) + pTerPatch->z0;
+
+			if (((j & 0xFF) + (i & 0xFF)) & 1) {
+				if (iType != 3) {
+					VectorCopy(v[0], clipPoints[0][0]);
+					VectorCopy(v[3], clipPoints[0][1]);
+					VectorCopy(v[1], clipPoints[0][2]);
+					R_AddMarkFragments(3, clipPoints, numPlanes, normals, dists,
+						maxPoints, pointBuffer, maxFragments, fragmentBuffer,
+						returnedPoints, returnedFragments, mins, maxs);
+				}
+				if (iType != 6 && *returnedFragments < maxFragments) {
+					VectorCopy(v[2], clipPoints[0][0]);
+					VectorCopy(v[1], clipPoints[0][1]);
+					VectorCopy(v[3], clipPoints[0][2]);
+					R_AddMarkFragments(3, clipPoints, numPlanes, normals, dists,
+						maxPoints, pointBuffer, maxFragments, fragmentBuffer,
+						returnedPoints, returnedFragments, mins, maxs);
+				}
+			} else {
+				if (iType != 5) {
+					VectorCopy(v[3], clipPoints[0][0]);
+					VectorCopy(v[2], clipPoints[0][1]);
+					VectorCopy(v[0], clipPoints[0][2]);
+					R_AddMarkFragments(3, clipPoints, numPlanes, normals, dists,
+						maxPoints, pointBuffer, maxFragments, fragmentBuffer,
+						returnedPoints, returnedFragments, mins, maxs);
+				}
+				if (iType != 4 && *returnedFragments < maxFragments) {
+					VectorCopy(v[1], clipPoints[0][0]);
+					VectorCopy(v[0], clipPoints[0][1]);
+					VectorCopy(v[2], clipPoints[0][2]);
+					R_AddMarkFragments(3, clipPoints, numPlanes, normals, dists,
+						maxPoints, pointBuffer, maxFragments, fragmentBuffer,
+						returnedPoints, returnedFragments, mins, maxs);
+				}
+			}
+		}
+	}
+
+	for (i = iFirstFragment; i < *returnedFragments; i++) {
+		fragmentBuffer[i].iIndex = patchIndex + 1;
+	}
+
+	dists[numPlanes - 2] += 96.0f;
+	dists[numPlanes - 1] += 108.0f;
+}
+
+/*
+=================
 R_MarkFragments
 
 =================
@@ -467,6 +594,24 @@ int R_MarkFragments( int numPoints, const vec3_t *points, const vec3_t projectio
 			}
 		}
 	}
+
+	// Project marks onto outdoor terrain patches (beach sand, grass, hills, snow)
+	if (tr.world && tr.world->terraPatches && tr.world->numTerraPatches > 0
+		&& returnedFragments < maxFragments
+		&& fRadiusSquared >= 16.0f) {
+		int p;
+		for (p = 0; p < tr.world->numTerraPatches && returnedFragments < maxFragments; p++) {
+			R_AddMarkFragmentsToTerrain(
+				&tr.world->terraPatches[p],
+				numPlanes, normals, dists,
+				maxPoints, pointBuffer,
+				maxFragments, fragmentBuffer,
+				&returnedPoints, &returnedFragments,
+				mins, maxs
+			);
+		}
+	}
+
 	return returnedFragments;
 }
 
@@ -476,4 +621,225 @@ int R_MarkFragmentsForInlineModel(clipHandle_t bmodel, const vec3_t vAngles, con
 {
 	// FIXME: unimplemented (GL2)
 	return 0;
+}
+
+/*
+=================
+R_AddStaticCorpseBloodPools
+Remaster: one-time per-map projection of wet blood pools beneath pre-placed static corpse props
+(e.g. static/body_us*.tik, static/body_german*.tik on Omaha Beach & campaign maps).
+Live-toggled by cg_gore / F8 with zero dynamic memory leaks.
+=================
+*/
+#define MAX_STATIC_CORPSE_MARKS 1024
+#define MAX_STATIC_CORPSE_VERTS 8192
+
+static srfMarkFragment_t s_staticCorpseMarks[MAX_STATIC_CORPSE_MARKS];
+static vec3_t            s_staticCorpseCenters[MAX_STATIC_CORPSE_MARKS];
+static polyVert_t        s_staticCorpseVerts[MAX_STATIC_CORPSE_VERTS];
+static int               s_numStaticCorpseMarks = 0;
+static int               s_numStaticCorpseVerts = 0;
+static const cStaticModelUnpacked_t *s_builtStaticModelsPtr = NULL;
+static int               s_builtStaticModelsCount = -1;
+static char              s_builtWorldName[MAX_QPATH];
+
+static qboolean R_IsStaticCorpseModelName(const char *name)
+{
+	if (!name || !name[0]) {
+		return qfalse;
+	}
+	if (Q_stristr(name, "body_us") || Q_stristr(name, "body_german")
+		|| Q_stristr(name, "body_rus") || Q_stristr(name, "body_brit")
+		|| Q_stristr(name, "body_italian") || Q_stristr(name, "body_allied")
+		|| Q_stristr(name, "body_axis") || Q_stristr(name, "body_ranger")
+		|| Q_stristr(name, "body_airborne") || Q_stristr(name, "dead_body")
+		|| Q_stristr(name, "corpse")) {
+		return qtrue;
+	}
+	return qfalse;
+}
+
+static void R_BuildStaticCorpseBloodPools(void)
+{
+	int i;
+	const vec3_t upDir = { 0.0f, 0.0f, 1.0f };
+
+	s_numStaticCorpseMarks   = 0;
+	s_numStaticCorpseVerts   = 0;
+	s_builtStaticModelsPtr   = tr.world->staticModels;
+	s_builtStaticModelsCount = tr.world->numStaticModels;
+	Q_strncpyz(s_builtWorldName, tr.world->baseName, sizeof(s_builtWorldName));
+
+	if (!tr.world->staticModels || tr.world->numStaticModels <= 0 || !tr.bloodPoolShader) {
+		return;
+	}
+
+	for (i = 0; i < tr.world->numStaticModels && s_numStaticCorpseMarks < MAX_STATIC_CORPSE_MARKS; i++) {
+		const cStaticModelUnpacked_t *sm = &tr.world->staticModels[i];
+		vec3_t         center, quad[4], projection, axU, axV, vLight, litPos, waterProbe;
+		vec3_t         pointBuf[128];
+		markFragment_t fragBuf[32];
+		trace_t        trWater;
+		float          ang, ca, sa, radius, inv2R;
+		int            numFrags, f;
+		byte           rgba[4];
+		unsigned int   h;
+
+		if (!R_IsStaticCorpseModelName(sm->model)) {
+			continue;
+		}
+
+		// Compute world-space center beneath the corpse torso/bounds (handles offset model pivots)
+		VectorCopy(sm->origin, center);
+		if (sm->tiki && sm->tiki->a) {
+			float  fScale = sm->tiki->load_scale * sm->scale;
+			vec3_t localPt;
+
+			localPt[0] = (sm->tiki->load_origin[0] + 0.5f * (sm->tiki->a->mins[0] + sm->tiki->a->maxs[0])) * fScale;
+			localPt[1] = (sm->tiki->load_origin[1] + 0.5f * (sm->tiki->a->mins[1] + sm->tiki->a->maxs[1])) * fScale;
+			localPt[2] = (sm->tiki->load_origin[2] + sm->tiki->a->mins[2] + 2.0f) * fScale;
+
+			VectorMA(center, localPt[0], sm->axis[0], center);
+			VectorMA(center, localPt[1], sm->axis[1], center);
+			VectorMA(center, localPt[2], sm->axis[2], center);
+		}
+
+		// Skip corpses submerged in deep water (still allow shallow Omaha shoreline surf)
+		VectorCopy(center, waterProbe);
+		waterProbe[2] += 22.0f;
+		ri.CM_BoxTrace(&trWater, waterProbe, waterProbe, vec3_origin, vec3_origin, 0, CONTENTS_WATER, qfalse);
+		if (trWater.startsolid) {
+			continue;
+		}
+
+		// Deterministic natural angle & radius per pre-placed corpse
+		h      = (unsigned int)(i * 2654435761u) ^ (unsigned int)((int)center[0] * 374761393u);
+		ang    = (float)(h & 0x3FFu) * (6.2831853f / 1024.0f);
+		radius = 16.0f + (float)((h >> 10) & 0xFFu) * (7.5f / 255.0f);
+		ca     = cosf(ang);
+		sa     = sinf(ang);
+
+		VectorSet(axU, ca * radius, sa * radius, 0.0f);
+		VectorSet(axV, -sa * radius, ca * radius, 0.0f);
+
+		// Clockwise quad from +Z so CrossProduct(edge, -projection) normals point INWARD (SIDE_FRONT)
+		quad[0][0] = center[0] - axU[0] - axV[0];
+		quad[0][1] = center[1] - axU[1] - axV[1];
+		quad[0][2] = center[2] + 6.0f;
+
+		quad[1][0] = center[0] - axU[0] + axV[0];
+		quad[1][1] = center[1] - axU[1] + axV[1];
+		quad[1][2] = center[2] + 6.0f;
+
+		quad[2][0] = center[0] + axU[0] + axV[0];
+		quad[2][1] = center[1] + axU[1] + axV[1];
+		quad[2][2] = center[2] + 6.0f;
+
+		quad[3][0] = center[0] + axU[0] - axV[0];
+		quad[3][1] = center[1] + axU[1] - axV[1];
+		quad[3][2] = center[2] + 6.0f;
+
+		VectorSet(projection, 0.0f, 0.0f, -26.0f);
+
+		numFrags = R_MarkFragments(
+			4,
+			(const vec3_t *)quad,
+			projection,
+			128,
+			pointBuf[0],
+			32,
+			fragBuf,
+			radius * radius
+		);
+		if (numFrags <= 0) {
+			continue;
+		}
+
+		VectorCopy(center, litPos);
+		litPos[2] += 4.0f;
+		R_GetLightingForDecal(vLight, upDir, litPos);
+		for (f = 0; f < 3; f++) {
+			float c = vLight[f] * 0.90f;
+			if (c < 76.0f) c = 76.0f;
+			else if (c > 235.0f) c = 235.0f;
+			rgba[f] = (byte)c;
+		}
+		rgba[3] = 224;
+
+		inv2R = 0.5f / (radius * radius);
+		for (f = 0; f < numFrags; f++) {
+			const markFragment_t *mf = &fragBuf[f];
+			srfMarkFragment_t    *dst;
+			int                   k;
+
+			if (mf->numPoints < 3) {
+				continue;
+			}
+			if (s_numStaticCorpseMarks >= MAX_STATIC_CORPSE_MARKS
+				|| s_numStaticCorpseVerts + mf->numPoints > MAX_STATIC_CORPSE_VERTS) {
+				break;
+			}
+
+			dst              = &s_staticCorpseMarks[s_numStaticCorpseMarks];
+			dst->surfaceType = SF_MARK_FRAG;
+			dst->hShader     = tr.bloodPoolShader->index;
+			dst->iIndex      = mf->iIndex;
+			dst->numVerts    = mf->numPoints;
+			dst->verts       = &s_staticCorpseVerts[s_numStaticCorpseVerts];
+			VectorCopy(center, s_staticCorpseCenters[s_numStaticCorpseMarks]);
+
+			for (k = 0; k < mf->numPoints; k++) {
+				polyVert_t *pv = &dst->verts[k];
+				const vec_t *pt = pointBuf[mf->firstPoint + k];
+				vec3_t delta;
+
+				VectorCopy(pt, pv->xyz);
+				if (mf->iIndex <= 0) {
+					pv->xyz[2] += 0.15f;
+				}
+				VectorSubtract(pt, center, delta);
+				pv->st[0] = 0.5f + DotProduct(delta, axU) * inv2R;
+				pv->st[1] = 0.5f + DotProduct(delta, axV) * inv2R;
+				pv->modulate[0] = rgba[0];
+				pv->modulate[1] = rgba[1];
+				pv->modulate[2] = rgba[2];
+				pv->modulate[3] = rgba[3];
+			}
+
+			s_numStaticCorpseVerts += mf->numPoints;
+			s_numStaticCorpseMarks++;
+		}
+	}
+}
+
+void R_AddStaticCorpseBloodPools(void)
+{
+	static cvar_t *r_goreCvar = NULL;
+	int i;
+
+	if (!tr.world || (tr.refdef.rdflags & RDF_NOWORLDMODEL) || !tr.bloodPoolShader) {
+		return;
+	}
+
+	if (!r_goreCvar) {
+		r_goreCvar = ri.Cvar_Get("cg_gore", "1", CVAR_ARCHIVE);
+	}
+	if (!r_goreCvar || r_goreCvar->integer <= 0) {
+		return;
+	}
+
+	if (s_builtStaticModelsPtr != tr.world->staticModels
+		|| s_builtStaticModelsCount != tr.world->numStaticModels
+		|| Q_stricmp(s_builtWorldName, tr.world->baseName) != 0) {
+		R_BuildStaticCorpseBloodPools();
+	}
+
+	for (i = 0; i < s_numStaticCorpseMarks; i++) {
+		vec3_t d;
+		VectorSubtract(s_staticCorpseCenters[i], tr.viewParms.ori.origin, d);
+		if (DotProduct(d, d) > 2400.0f * 2400.0f) {
+			continue;
+		}
+		R_AddDrawSurf(&s_staticCorpseMarks[i].surfaceType, tr.bloodPoolShader, 0, 0, 0, 0);
+	}
 }

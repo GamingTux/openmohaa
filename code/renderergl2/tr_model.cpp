@@ -876,6 +876,11 @@ void R_AddSkelSurfaces(trRefEntity_t *ent)
                 shader = R_GetShaderByHandle(ent->e.customShader);
                 R_AddDrawSurf((surfaceType_t *)surface, shader, 0, 0, 0, 0);
             }
+            if (!(tr.viewParms.flags & VPF_PISUNSHADOW) && !personalModel && tr.bloodWoundShader
+                && ent->e.entityNumber >= 0 && ent->e.entityNumber < MAX_GENTITIES
+                && tr.bodyWoundHead[ent->e.entityNumber] >= 0) {
+                R_AddDrawSurf((surfaceType_t *)surface, tr.bloodWoundShader, 0, 0, 0, 0);
+            }
         }
     }
 
@@ -1450,6 +1455,191 @@ void RB_SkelMesh(skelSurfaceGame_t *sf)
 		}
 	} //else
 #endif
+    if (tess.shader == tr.bloodWoundShader && tr.bloodWoundShader) {
+        // Remaster: conformally project bone-tracked gunshot wounds onto skinned skeletal triangles
+        const int entNum = backEnd.currentEntity->e.entityNumber;
+        const int endIndex = tess.numIndexes;
+        const int MAX_WOUND_SURF_VERTS = 768;
+        vec3_t    outWoundXyz[768];
+        int16_t   outWoundNorm[768][4];
+        vec2_t    outWoundSt[768];
+        uint16_t  outWoundCol[768][4];
+        int       outVerts = 0;
+
+        if (entNum >= 0 && entNum < MAX_GENTITIES) {
+            const trRefEntity_t *ent = backEnd.currentEntity;
+            int wIdx;
+            for (wIdx = tr.bodyWoundHead[entNum]; wIdx >= 0 && outVerts + 3 <= MAX_WOUND_SURF_VERTS; wIdx = tr.bodyWounds[wIdx].next) {
+                const bodyWound_t *bw = &tr.bodyWounds[wIdx];
+                vec3_t delta, lPos, lU, lV, lN;
+                float  rad = bw->radius;
+                float  inv2R = 0.5f / rad;
+                float  bestDn = -1e9f;
+                uint16_t col16[4];
+                int ti;
+
+                VectorSubtract(bw->origin, ent->e.origin, delta);
+                lPos[0] = DotProduct(delta, ent->e.axis[0]);
+                lPos[1] = DotProduct(delta, ent->e.axis[1]);
+                lPos[2] = DotProduct(delta, ent->e.axis[2]);
+
+                lU[0] = DotProduct(bw->axisU, ent->e.axis[0]);
+                lU[1] = DotProduct(bw->axisU, ent->e.axis[1]);
+                lU[2] = DotProduct(bw->axisU, ent->e.axis[2]);
+
+                lV[0] = DotProduct(bw->axisV, ent->e.axis[0]);
+                lV[1] = DotProduct(bw->axisV, ent->e.axis[1]);
+                lV[2] = DotProduct(bw->axisV, ent->e.axis[2]);
+
+                lN[0] = DotProduct(bw->normal, ent->e.axis[0]);
+                lN[1] = DotProduct(bw->normal, ent->e.axis[1]);
+                lN[2] = DotProduct(bw->normal, ent->e.axis[2]);
+
+                col16[0] = (uint16_t)((int)bw->color[0] * 257);
+                col16[1] = (uint16_t)((int)bw->color[1] * 257);
+                col16[2] = (uint16_t)((int)bw->color[2] * 257);
+                col16[3] = (uint16_t)((int)bw->color[3] * 257);
+
+                // Pass 1: snap along impact ray from SOLID_BBOX hit point onto the frontmost visible skin/clothing layer (LOD-safe)
+                for (ti = (int)baseIndex; ti + 2 < endIndex; ti += 3) {
+                    int idx0 = tess.indexes[ti + 0];
+                    int idx1 = tess.indexes[ti + 1];
+                    int idx2 = tess.indexes[ti + 2];
+                    vec3_t d0, d1, d2, n0, n1, n2, avgN;
+                    float  u0, u1, u2, v0, v1, v2, dn0, dn1, dn2, dnMax;
+
+                    VectorSubtract(tess.xyz[idx0], lPos, d0);
+                    VectorSubtract(tess.xyz[idx1], lPos, d1);
+                    VectorSubtract(tess.xyz[idx2], lPos, d2);
+
+                    u0 = 0.5f + DotProduct(d0, lU) * inv2R;
+                    u1 = 0.5f + DotProduct(d1, lU) * inv2R;
+                    u2 = 0.5f + DotProduct(d2, lU) * inv2R;
+                    if ((u0 < 0.0f && u1 < 0.0f && u2 < 0.0f) || (u0 > 1.0f && u1 > 1.0f && u2 > 1.0f)) {
+                        continue;
+                    }
+                    v0 = 0.5f + DotProduct(d0, lV) * inv2R;
+                    v1 = 0.5f + DotProduct(d1, lV) * inv2R;
+                    v2 = 0.5f + DotProduct(d2, lV) * inv2R;
+                    if ((v0 < 0.0f && v1 < 0.0f && v2 < 0.0f) || (v0 > 1.0f && v1 > 1.0f && v2 > 1.0f)) {
+                        continue;
+                    }
+
+                    dn0 = DotProduct(d0, lN);
+                    dn1 = DotProduct(d1, lN);
+                    dn2 = DotProduct(d2, lN);
+                    dnMax = (dn0 > dn1) ? ((dn0 > dn2) ? dn0 : dn2) : ((dn1 > dn2) ? dn1 : dn2);
+                    if (dnMax < -20.0f || dnMax > 14.0f) {
+                        continue;
+                    }
+
+                    R_VaoUnpackNormal(n0, tess.normal[idx0]);
+                    R_VaoUnpackNormal(n1, tess.normal[idx1]);
+                    R_VaoUnpackNormal(n2, tess.normal[idx2]);
+                    avgN[0] = n0[0] + n1[0] + n2[0];
+                    avgN[1] = n0[1] + n1[1] + n2[1];
+                    avgN[2] = n0[2] + n1[2] + n2[2];
+                    if (DotProduct(avgN, lN) < 0.02f) {
+                        continue;
+                    }
+
+                    if (dnMax > bestDn) {
+                        bestDn = dnMax;
+                    }
+                }
+
+                if (bestDn < -1e8f) {
+                    continue;
+                }
+
+                // Pass 2: emit triangles belonging to that frontmost outer uniform/skin surface
+                for (ti = (int)baseIndex; ti + 2 < endIndex && outVerts + 3 <= MAX_WOUND_SURF_VERTS; ti += 3) {
+                    int idx0 = tess.indexes[ti + 0];
+                    int idx1 = tess.indexes[ti + 1];
+                    int idx2 = tess.indexes[ti + 2];
+                    const float *p0 = tess.xyz[idx0];
+                    const float *p1 = tess.xyz[idx1];
+                    const float *p2 = tess.xyz[idx2];
+                    vec3_t d0, d1, d2, n0, n1, n2, avgN;
+                    float  u0, u1, u2, v0, v1, v2, dn0, dn1, dn2, dnMax;
+
+                    VectorSubtract(p0, lPos, d0);
+                    VectorSubtract(p1, lPos, d1);
+                    VectorSubtract(p2, lPos, d2);
+
+                    u0 = 0.5f + DotProduct(d0, lU) * inv2R;
+                    u1 = 0.5f + DotProduct(d1, lU) * inv2R;
+                    u2 = 0.5f + DotProduct(d2, lU) * inv2R;
+                    if ((u0 < 0.0f && u1 < 0.0f && u2 < 0.0f) || (u0 > 1.0f && u1 > 1.0f && u2 > 1.0f)) {
+                        continue;
+                    }
+                    v0 = 0.5f + DotProduct(d0, lV) * inv2R;
+                    v1 = 0.5f + DotProduct(d1, lV) * inv2R;
+                    v2 = 0.5f + DotProduct(d2, lV) * inv2R;
+                    if ((v0 < 0.0f && v1 < 0.0f && v2 < 0.0f) || (v0 > 1.0f && v1 > 1.0f && v2 > 1.0f)) {
+                        continue;
+                    }
+
+                    dn0 = DotProduct(d0, lN);
+                    dn1 = DotProduct(d1, lN);
+                    dn2 = DotProduct(d2, lN);
+                    dnMax = (dn0 > dn1) ? ((dn0 > dn2) ? dn0 : dn2) : ((dn1 > dn2) ? dn1 : dn2);
+                    if (dnMax < bestDn - 6.0f || dnMax > bestDn + 3.0f) {
+                        continue;
+                    }
+
+                    R_VaoUnpackNormal(n0, tess.normal[idx0]);
+                    R_VaoUnpackNormal(n1, tess.normal[idx1]);
+                    R_VaoUnpackNormal(n2, tess.normal[idx2]);
+                    avgN[0] = n0[0] + n1[0] + n2[0];
+                    avgN[1] = n0[1] + n1[1] + n2[1];
+                    avgN[2] = n0[2] + n1[2] + n2[2];
+                    if (DotProduct(avgN, lN) < 0.02f) {
+                        continue;
+                    }
+
+                    // Uniform 0.06u bias along impact normal lN keeps stitched edges crack-free & beats distant Z-fighting
+                    VectorMA(p0, 0.06f, lN, outWoundXyz[outVerts + 0]);
+                    VectorMA(p1, 0.06f, lN, outWoundXyz[outVerts + 1]);
+                    VectorMA(p2, 0.06f, lN, outWoundXyz[outVerts + 2]);
+
+                    memcpy(outWoundNorm[outVerts + 0], tess.normal[idx0], sizeof(outWoundNorm[0]));
+                    memcpy(outWoundNorm[outVerts + 1], tess.normal[idx1], sizeof(outWoundNorm[0]));
+                    memcpy(outWoundNorm[outVerts + 2], tess.normal[idx2], sizeof(outWoundNorm[0]));
+
+                    outWoundSt[outVerts + 0][0] = u0; outWoundSt[outVerts + 0][1] = v0;
+                    outWoundSt[outVerts + 1][0] = u1; outWoundSt[outVerts + 1][1] = v1;
+                    outWoundSt[outVerts + 2][0] = u2; outWoundSt[outVerts + 2][1] = v2;
+
+                    memcpy(outWoundCol[outVerts + 0], col16, sizeof(col16));
+                    memcpy(outWoundCol[outVerts + 1], col16, sizeof(col16));
+                    memcpy(outWoundCol[outVerts + 2], col16, sizeof(col16));
+                    outVerts += 3;
+                }
+            }
+        }
+
+        tess.numVertexes = baseVertex;
+        tess.numIndexes  = baseIndex;
+        if (outVerts > 0) {
+            int k, dstV, dstI;
+            RB_CHECKOVERFLOW(outVerts, outVerts);
+            dstV = tess.numVertexes;
+            dstI = tess.numIndexes;
+            for (k = 0; k < outVerts; k++) {
+                VectorCopy(outWoundXyz[k], tess.xyz[dstV + k]);
+                memcpy(tess.normal[dstV + k], outWoundNorm[k], sizeof(outWoundNorm[0]));
+                tess.texCoords[dstV + k][0] = outWoundSt[k][0];
+                tess.texCoords[dstV + k][1] = outWoundSt[k][1];
+                memcpy(tess.color[dstV + k], outWoundCol[k], sizeof(outWoundCol[0]));
+                tess.indexes[dstI + k] = dstV + k;
+            }
+            tess.numVertexes = dstV + outVerts;
+            tess.numIndexes  = dstI + outVerts;
+        }
+        return;
+    }
+
     for (i = 0; i < render_count; i++) {
         tess.color[baseVertex + i][0] = 0xffff;
         tess.color[baseVertex + i][1] = 0xffff;

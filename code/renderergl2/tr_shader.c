@@ -5558,29 +5558,42 @@ static void CreateInternalShaders( void ) {
 
 	// Procedural Remaster blood & gore shaders (zero external asset dependencies)
 	{
-		static const char *bloodShaderNames[5] = {
+		static const char *bloodShaderNames[6] = {
 			"remaster_blood_splat0",
 			"remaster_blood_splat1",
 			"remaster_blood_pool",
 			"remaster_blood_mist",
-			"remaster_gun_smoke"
+			"remaster_gun_smoke",
+			"remaster_blood_wound"
 		};
 		int b;
-		for ( b = 0; b < 5; b++ ) {
+		tr.bloodPoolShader  = NULL;
+		tr.bloodWoundShader = NULL;
+		for ( b = 0; b < 6; b++ ) {
+			shader_t *sh;
+			qboolean isDecal = (b < 3 || b == 5) ? qtrue : qfalse;
 			if ( !tr.bloodImages[b] )
 				continue;
 			InitShader( bloodShaderNames[b], LIGHTMAP_2D );
-			shader.cullType = CT_TWO_SIDED;
-			shader.polygonOffset = (b < 3) ? qtrue : qfalse;
+			shader.cullType = (b == 5) ? CT_FRONT_SIDED : CT_TWO_SIDED;
+			shader.polygonOffset = isDecal;
 			shader.isWetBlood = (b < 3) ? qtrue : qfalse;
-			shader.sort = (b < 3) ? SS_DECAL : SS_BLEND1;
+			shader.sort = isDecal ? SS_DECAL : SS_BLEND1;
 			stages[0].bundle[0].image[0] = tr.bloodImages[b];
 			stages[0].bundle[0].tcGen = TCGEN_TEXTURE;
 			stages[0].active = qtrue;
 			stages[0].rgbGen = CGEN_VERTEX;
 			stages[0].alphaGen = AGEN_VERTEX;
-			stages[0].stateBits = GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA;
-			FinishShader();
+			stages[0].noFog = (b == 5) ? qtrue : qfalse;
+			stages[0].stateBits = (b == 5)
+				? (GLS_SRCBLEND_DST_COLOR | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA)
+				: (GLS_SRCBLEND_SRC_ALPHA | GLS_DSTBLEND_ONE_MINUS_SRC_ALPHA);
+			sh = FinishShader();
+			if ( b == 2 ) {
+				tr.bloodPoolShader = sh;
+			} else if ( b == 5 ) {
+				tr.bloodWoundShader = sh;
+			}
 		}
 	}
 }

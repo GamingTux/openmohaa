@@ -329,6 +329,22 @@ void GLimp_InitExtraExtensions(void)
 		ri.Printf(PRINT_ALL, result[2], extension);
 	}
 
+	// GL_KHR_texture_compression_astc_ldr (native hardware ASTC on Raspberry Pi 5 V3D 7.1 / ARM GPUs)
+	extension = "GL_KHR_texture_compression_astc_ldr";
+	if (SDL_GL_ExtensionSupported(extension))
+	{
+		qboolean useAstc = r_ext_compressed_astc && r_ext_compressed_astc->integer > 0;
+
+		if (useAstc)
+			glRefConfig.textureCompression |= TCR_ASTC;
+
+		ri.Printf(PRINT_ALL, result[useAstc], extension);
+	}
+	else
+	{
+		ri.Printf(PRINT_ALL, result[2], extension);
+	}
+
 	// GL_EXT_direct_state_access
 	extension = "GL_EXT_direct_state_access";
 	glRefConfig.directStateAccess = qfalse;

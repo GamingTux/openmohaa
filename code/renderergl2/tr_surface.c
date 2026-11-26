@@ -1318,6 +1318,10 @@ void RB_SurfaceMarkFragment(srfMarkFragment_t* p) {
 	RB_CheckVao(tess.vao);
 	RB_CHECKOVERFLOW( p->numVerts, 3*(p->numVerts - 2) );
 
+	if (p->iIndex > 0 && (!tr.world || !tr.world->terraPatches || p->iIndex > tr.world->numTerraPatches)) {
+		return;
+	}
+
 	if (p->iIndex <= 0 || R_TerrainHeightForPoly(&tr.world->terraPatches[p->iIndex - 1], p->verts, p->numVerts))
 	{
 		// FIXME: from here on out, it's mostly the same code as in RB_SurfacePolychain,
@@ -1328,6 +1332,9 @@ void RB_SurfaceMarkFragment(srfMarkFragment_t* p) {
 		for ( i = 0; i < p->numVerts; i++ )
 		{
 			VectorCopy( p->verts[i].xyz, tess.xyz[numv] );
+			if (p->iIndex > 0) {
+				tess.xyz[numv][2] += 0.20f;
+			}
             tess.texCoords[numv][0] = p->verts[i].st[0];
             tess.texCoords[numv][1] = p->verts[i].st[1];
 			tess.color[numv][0] = p->verts[i].modulate[0] * 65535 / 255;

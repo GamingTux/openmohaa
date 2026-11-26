@@ -601,6 +601,7 @@ void CG_PrepRefresh(void)
     cgs.media.bloodSplatShaders[1]     = cgi.R_RegisterShader("remaster_blood_splat1");
     cgs.media.bloodPoolShader          = cgi.R_RegisterShader("remaster_blood_pool");
     cgs.media.bloodMistShader          = cgi.R_RegisterShader("remaster_blood_mist");
+    cgs.media.bloodWoundShader         = cgi.R_RegisterShader("remaster_blood_wound");
     cgs.media.gunSmokeShader           = cgi.R_RegisterShader("remaster_gun_smoke");
     CG_InitGore();
     cgs.media.lagometerShader          = cgi.R_RegisterShaderNoMip("gfx/2d/blank");

@@ -1525,6 +1525,76 @@ void Sentient::ArmorDamage(Event *ev)
     // Set means of death
     means_of_death = meansofdeath;
 
+    // Remaster: broadcast standard CGM_BULLET_8 impact for scripted bullet hits (e.g. Omaha Beach global/bullethit.scr
+    // passing position==vec_zero) and explosions/melee so client gore & body wounds trigger consistently in setpieces.
+    if (!isClient() && damage >= 5.0f && !(flags & FL_GODMODE)) {
+        const bool isScriptedBullet =
+            ((meansofdeath == MOD_BULLET || meansofdeath == MOD_FAST_BULLET || meansofdeath == MOD_SHOTGUN
+              || meansofdeath == MOD_IMPACT || (dflags & DAMAGE_BULLET))
+             && position == vec_zero);
+        const bool isBlastOrMelee =
+            (meansofdeath == MOD_EXPLOSION || meansofdeath == MOD_EXPLODEWALL || meansofdeath == MOD_GRENADE
+             || meansofdeath == MOD_ROCKET || meansofdeath == MOD_GIB || meansofdeath == MOD_IMPALE
+             || meansofdeath == MOD_BASH || meansofdeath == MOD_LANDMINE || meansofdeath == MOD_AAGUN);
+
+        if (isScriptedBullet || isBlastOrMelee) {
+            Vector bloodPos = position;
+            Vector hitNorm  = normal;
+
+            if (hitNorm.lengthSquared() < 0.01f) {
+                if (direction.lengthSquared() >= 0.01f) {
+                    hitNorm = -direction;
+                    hitNorm.normalize();
+                } else {
+                    hitNorm = orientation[0];
+                }
+            } else {
+                hitNorm.normalize();
+            }
+
+            if (bloodPos == vec_zero) {
+                const char *boneName = "Bip01 Spine2";
+                switch (location) {
+                case HITLOC_HEAD:
+                case HITLOC_HELMET:      boneName = "Bip01 Head"; break;
+                case HITLOC_NECK:        boneName = "Bip01 Neck"; break;
+                case HITLOC_TORSO_UPPER: boneName = "Bip01 Spine2"; break;
+                case HITLOC_TORSO_MID:   boneName = "Bip01 Spine1"; break;
+                case HITLOC_TORSO_LOWER: boneName = "Bip01 Spine"; break;
+                case HITLOC_PELVIS:      boneName = "Bip01 Pelvis"; break;
+                case HITLOC_R_ARM_UPPER: boneName = "Bip01 R UpperArm"; break;
+                case HITLOC_L_ARM_UPPER: boneName = "Bip01 L UpperArm"; break;
+                case HITLOC_R_ARM_LOWER:
+                case HITLOC_R_HAND:      boneName = "Bip01 R Forearm"; break;
+                case HITLOC_L_ARM_LOWER:
+                case HITLOC_L_HAND:      boneName = "Bip01 L Forearm"; break;
+                case HITLOC_R_LEG_UPPER: boneName = "Bip01 R Thigh"; break;
+                case HITLOC_L_LEG_UPPER: boneName = "Bip01 L Thigh"; break;
+                case HITLOC_R_LEG_LOWER:
+                case HITLOC_R_FOOT:      boneName = "Bip01 R Calf"; break;
+                case HITLOC_L_LEG_LOWER:
+                case HITLOC_L_FOOT:      boneName = "Bip01 L Calf"; break;
+                default: break;
+                }
+                if (!GetTag(boneName, &bloodPos)) {
+                    bloodPos = origin + Vector(0, 0, 48);
+                }
+                bloodPos += hitNorm * 5.0f;
+            }
+
+            const int bulletbits  = (g_protocol >= protocol_e::PROTOCOL_MOHTA_MIN) ? 2 : 1;
+            const int bulletlarge = (damage >= 60.0f || isBlastOrMelee || health <= 0.0f) ? 1 : 0;
+            gi.SetBroadcastVisible(bloodPos, NULL);
+            gi.MSG_StartCGM(BG_MapCGMToProtocol(g_protocol, CGM_BULLET_8));
+            gi.MSG_WriteCoord(bloodPos[0]);
+            gi.MSG_WriteCoord(bloodPos[1]);
+            gi.MSG_WriteCoord(bloodPos[2]);
+            gi.MSG_WriteDir(hitNorm);
+            gi.MSG_WriteBits(bulletlarge, bulletbits);
+            gi.MSG_EndCGM();
+        }
+    }
+
     /*
     // Spawn a blood spurt if this model has one
     if( ShouldBleed( meansofdeath, false ) && !blocked )

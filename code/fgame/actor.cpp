@@ -5190,6 +5190,7 @@ void Actor::HandleKilled(Event *ev, bool bPlayDeathAnim)
 {
     deadflag = DEAD_DEAD;
     health   = 0.0;
+    edict->s.eFlags |= EF_DEAD;
 
     if (bPlayDeathAnim) {
         Event event(EV_Listener_ExecuteScript, ev->NumArgs() + 1);

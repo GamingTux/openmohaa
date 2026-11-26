@@ -105,7 +105,11 @@ static void R_GenerateBloodTexture(int variant, unsigned char *rgba)
 
 			if (x < 2 || x >= S - 2 || y < 2 || y >= S - 2 || borderFade <= 0.001f)
 			{
-				out[0] = 64; out[1] = 4; out[2] = 4; out[3] = 0;
+				if (variant == 5) {
+					out[0] = 0; out[1] = 0; out[2] = 0; out[3] = 0;
+				} else {
+					out[0] = 64; out[1] = 4; out[2] = 4; out[3] = 0;
+				}
 				continue;
 			}
 
@@ -217,7 +221,7 @@ static void R_GenerateBloodTexture(int variant, unsigned char *rgba)
 				cb = 8.0f   + 4.0f  * fbm;
 				alpha = R_GoreSmoothstep(0.05f, 0.72f, density) * 0.86f;
 			}
-			else
+			else if (variant == 4)
 			{
 				// Variant 4: Soft wispy gun-barrel heat smoke puff (neutral pale gray-white)
 				float fbm = R_GoreFbm(nx * 3.0f + 7.0f, ny * 3.0f + 7.0f, seed);
@@ -227,6 +231,56 @@ static void R_GenerateBloodTexture(int variant, unsigned char *rgba)
 				cg = 214.0f + 24.0f * fbm;
 				cb = 220.0f + 24.0f * fbm;
 				alpha = R_GoreSmoothstep(0.04f, 0.85f, density) * 0.62f;
+			}
+			else
+			{
+				// Variant 5: Multiply blood-soak gunshot wound for GL_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA
+				// Blend equation: out = Dst * (1 - alpha + rgb) = Dst * (1 - alpha * (1 - tint))
+				// rgb MUST be premultiplied by alpha (rgb <= alpha) so outer border is strictly identity (1.0)!
+				float fbm  = R_GoreFbm(nx * 4.4f + 11.0f, ny * 4.4f + 11.0f, seed);
+				float fine = R_GoreFbm(nx * 13.0f + 19.0f, ny * 13.0f + 19.0f, seed + 53);
+				float tearWarp = 0.050f * cosf(3.0f * a + 0.7f)
+				               + 0.036f * sinf(5.0f * a + 2.1f)
+				               + 0.022f * cosf(9.0f * a + 1.3f);
+
+				// Crisp torn dark bullet entry hole in the center (readable at close & medium range)
+				float holeRad = 0.18f + tearWarp * 0.55f + (fine - 0.5f) * 0.05f;
+				float hole = 1.0f - R_GoreSmoothstep(holeRad - 0.045f, holeRad + 0.032f, r);
+
+				// Darker lacerated inner blood collar right around the puncture
+				float rimRad = 0.30f + tearWarp * 0.85f + (fbm - 0.5f) * 0.10f;
+				float rim = 1.0f - R_GoreSmoothstep(rimRad - 0.080f, rimRad + 0.060f, r);
+
+				// Rich irregular arterial blood stain soaking organically into wool/skin fibers
+				float soakRad = 0.62f + tearWarp * 1.75f + (fbm - 0.5f) * 0.26f + (fine - 0.5f) * 0.10f;
+				float soak = (1.0f - R_GoreSmoothstep(soakRad - 0.22f, soakRad + 0.10f, r)) * borderFade;
+
+				// Subtle micro-wicking fibers around edge
+				float speck = (1.0f - R_GoreSmoothstep(0.28f, 0.78f, r)) * R_GoreSmoothstep(0.70f, 0.88f, fine) * borderFade;
+
+				density = soak;
+				if (rim > density) density = rim;
+				if (hole > density) density = hole;
+				if (speck * 0.68f > density) density = speck * 0.68f;
+
+				alpha = R_GoreSmoothstep(0.03f, 0.42f, density) * (0.86f + 0.12f * fbm);
+				if (rim * 0.94f > alpha)  alpha = rim * 0.94f;
+				if (hole * 0.98f > alpha) alpha = hole * 0.98f;
+				alpha *= borderFade;
+
+				// Target dye tint (0..1): rich deep crimson soak -> darker bruised rim -> pitch-dark entry puncture
+				{
+					float tr = 0.56f - 0.18f * rim - 0.34f * hole + (fine - 0.5f) * 0.06f;
+					float tg = 0.045f - 0.015f * rim - 0.022f * hole;
+					float tb = 0.040f - 0.014f * rim - 0.020f * hole;
+					if (tr < 0.03f) tr = 0.03f; else if (tr > 0.72f) tr = 0.72f;
+					if (tg < 0.01f) tg = 0.01f; else if (tg > 0.12f) tg = 0.12f;
+					if (tb < 0.01f) tb = 0.01f; else if (tb > 0.12f) tb = 0.12f;
+					// Premultiply by alpha for exact multiply-soak blend
+					cr = tr * alpha * 255.0f;
+					cg = tg * alpha * 255.0f;
+					cb = tb * alpha * 255.0f;
+				}
 			}
 
 			if (cr < 0.0f) cr = 0.0f; else if (cr > 255.0f) cr = 255.0f;

@@ -1568,6 +1568,7 @@ typedef struct srfStaticModel_s {
 
 typedef struct srfMarkFragment_s {
 	surfaceType_t surfaceType;
+	qhandle_t hShader;
 	int iIndex;
 	int numVerts;
 	polyVert_t* verts;
@@ -2039,6 +2040,7 @@ typedef enum {
 	TCR_NONE = 0x0000,
 	TCR_RGTC = 0x0001,
 	TCR_BPTC = 0x0002,
+	TCR_ASTC = 0x0004,
 } textureCompressionRef_t;
 
 // We can't change glConfig_t without breaking DLL/vms compatibility, so
@@ -2174,6 +2176,19 @@ typedef struct {
 ** but may read fields that aren't dynamically modified
 ** by the frontend.
 */
+#define MAX_BODY_WOUNDS_FRAME 128
+
+typedef struct bodyWound_s {
+	int    entityNum;
+	int    next;
+	vec3_t origin;
+	vec3_t axisU;
+	vec3_t axisV;
+	vec3_t normal;
+	float  radius;
+	byte   color[4];
+} bodyWound_t;
+
 typedef struct {
 	qboolean				registered;		// cleared at shutdown, set at beginRegistration
 
@@ -2203,7 +2218,12 @@ typedef struct {
 	image_t					*flareImage;
 	image_t					*whiteImage;			// full of 0xff
 	image_t					*identityLightImage;	// full of tr.identityLightByte
-	image_t					*bloodImages[5];		// procedural remaster blood splat/pool/mist + gunsmoke textures
+	image_t					*bloodImages[6];		// procedural remaster blood splat/pool/mist/gunsmoke/wound textures
+	shader_t				*bloodPoolShader;
+	shader_t				*bloodWoundShader;
+	bodyWound_t				bodyWounds[MAX_BODY_WOUNDS_FRAME];
+	int						numBodyWounds;
+	int						bodyWoundHead[MAX_GENTITIES];
 
 	image_t                 *shadowCubemaps[MAX_DLIGHTS];
 	
@@ -3457,6 +3477,7 @@ extern terrainVert_t* g_pVert;
 void R_MarkTerrainPatch(cTerraPatchUnpacked_t* pPatch);
 void R_AddTerrainSurfaces();
 void R_AddTerrainMarkSurfaces();
+void R_AddStaticCorpseBloodPools( void );
 void R_InitTerrain();
 void R_ShutdownTerrain();
 void R_TerrainFree();

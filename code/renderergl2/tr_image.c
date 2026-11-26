@@ -22,6 +22,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 // tr_image.c
 #include "tr_local.h"
 #include "../renderercommon/tr_gore_tex.h"
+#include "../renderercommon/tr_ktx_astc.h"
 
 #include "tr_dsa.h"
 
@@ -278,6 +279,12 @@ void R_ImageList_f( void ) {
 				format = "Depth32";
 				// 4 bytes per pixel
 				estSize *= 4;
+				break;
+			default:
+				if (R_ASTCBlockDims(image->internalFormat, NULL, NULL)) {
+					format = (char *)R_ASTCFormatName(image->internalFormat);
+					estSize = R_ASTCMipSize(image->uploadWidth, image->uploadHeight, image->internalFormat);
+				}
 				break;
 		}
 
@@ -1969,6 +1976,11 @@ static int CalculateMipSize(int width, int height, GLenum picFormat)
 	int numBlocks = ((width + 3) / 4) * ((height + 3) / 4);
 	int numPixels = width * height;
 
+	if (R_ASTCBlockDims(picFormat, NULL, NULL))
+	{
+		return R_ASTCMipSize(width, height, picFormat);
+	}
+
 	switch (picFormat)
 	{
 		case GL_COMPRESSED_RGB_S3TC_DXT1_EXT:
@@ -2045,7 +2057,10 @@ static void RawImage_UploadTexture(GLuint texture, byte *data, int x, int y, int
 
 		if (!rgba)
 		{
-			qglCompressedTextureSubImage2DEXT(texture, target, miplevel, x, y, width, height, picFormat, size, data);
+			if (R_ASTCBlockDims(picFormat, NULL, NULL) && !subtexture)
+				qglCompressedTextureImage2DEXT(texture, target, miplevel, picFormat, width, height, 0, size, data);
+			else
+				qglCompressedTextureSubImage2DEXT(texture, target, miplevel, x, y, width, height, picFormat, size, data);
 		}
 		else
 		{
@@ -2210,7 +2225,7 @@ image_t *R_CreateImage2( const char *name, byte *pic, int width, int height, GLe
 	dataType = picFormat == GL_RGBA16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE;
 
 	// Convert image data format for OpenGL ES, data is converted for each mip level
-	if (qglesMajorVersion)
+	if (qglesMajorVersion && !R_ASTCBlockDims(internalFormat, NULL, NULL))
 	{
 		switch (internalFormat)
 		{
@@ -2277,29 +2292,34 @@ image_t *R_CreateImage2( const char *name, byte *pic, int width, int height, GLe
 	image->uploadHeight = height;
 
 	// Allocate texture storage so we don't have to worry about it later.
-	mipWidth = width;
-	mipHeight = height;
-	miplevel = 0;
-	do
+	// ASTC textures cannot be pre-allocated with glTexImage2D(..., NULL); they are
+	// allocated & uploaded directly per mip via qglCompressedTextureImage2DEXT.
+	if (!R_ASTCBlockDims(internalFormat, NULL, NULL))
 	{
-		lastMip = !mipmap || (mipWidth == 1 && mipHeight == 1);
-		if (cubemap)
+		mipWidth = width;
+		mipHeight = height;
+		miplevel = 0;
+		do
 		{
-			int i;
+			lastMip = !mipmap || (mipWidth == 1 && mipHeight == 1);
+			if (cubemap)
+			{
+				int i;
 
-			for (i = 0; i < 6; i++)
-				qglTextureImage2DEXT(image->texnum, GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, miplevel, internalFormat, mipWidth, mipHeight, 0, dataFormat, dataType, NULL);
-		}
-		else
-		{
-			qglTextureImage2DEXT(image->texnum, GL_TEXTURE_2D, miplevel, internalFormat, mipWidth, mipHeight, 0, dataFormat, dataType, NULL);
-		}
+				for (i = 0; i < 6; i++)
+					qglTextureImage2DEXT(image->texnum, GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, miplevel, internalFormat, mipWidth, mipHeight, 0, dataFormat, dataType, NULL);
+			}
+			else
+			{
+				qglTextureImage2DEXT(image->texnum, GL_TEXTURE_2D, miplevel, internalFormat, mipWidth, mipHeight, 0, dataFormat, dataType, NULL);
+			}
 
-		mipWidth  = MAX(1, mipWidth >> 1);
-		mipHeight = MAX(1, mipHeight >> 1);
-		miplevel++;
+			mipWidth  = MAX(1, mipWidth >> 1);
+			mipHeight = MAX(1, mipHeight >> 1);
+			miplevel++;
+		}
+		while (!lastMip);
 	}
-	while (!lastMip);
 
 	// Upload data.
 	if (pic)
@@ -2578,9 +2598,22 @@ image_t	*R_FindImageFile( const char *name, imgType_t type, imgFlags_t flags )
 	}
 
 	//
-	// load the pic from disk
+	// load the pic from disk (try native hardware ASTC .ktx first when supported)
 	//
-	R_LoadImage( name, &pic, &width, &height, &picFormat, &picNumMips );
+	pic = NULL;
+	width = height = 0;
+	picFormat = GL_RGBA8;
+	picNumMips = 0;
+
+	if ((glRefConfig.textureCompression & TCR_ASTC)
+		&& !(flags & (IMGFLAG_NO_COMPRESSION | IMGFLAG_CUBEMAP)))
+	{
+		R_LoadKTX1_ASTC(name, &pic, &width, &height, &picFormat, &picNumMips, NULL);
+	}
+
+	if ( pic == NULL ) {
+		R_LoadImage( name, &pic, &width, &height, &picFormat, &picNumMips );
+	}
 	if ( pic == NULL ) {
 		return NULL;
 	}
@@ -2910,16 +2943,17 @@ void R_CreateBuiltinImages( void ) {
 	R_CreateFogImage();
 
 	{
-		static const char *bloodNames[5] = {
+		static const char *bloodNames[6] = {
 			"*remaster_blood_splat0",
 			"*remaster_blood_splat1",
 			"*remaster_blood_pool",
 			"*remaster_blood_mist",
-			"*remaster_gun_smoke"
+			"*remaster_gun_smoke",
+			"*remaster_blood_wound"
 		};
 		byte *bloodBuf = ri.Hunk_AllocateTempMemory(REMASTER_BLOOD_TEX_SIZE * REMASTER_BLOOD_TEX_SIZE * 4);
 		int b;
-		for (b = 0; b < 5; b++)
+		for (b = 0; b < 6; b++)
 		{
 			R_GenerateBloodTexture(b, bloodBuf);
 			tr.bloodImages[b] = R_CreateImage(

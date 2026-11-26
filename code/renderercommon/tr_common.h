@@ -118,6 +118,7 @@ extern cvar_t *r_swapInterval;
 
 extern cvar_t *r_allowExtensions;				// global enable/disable of OpenGL extensions
 extern cvar_t *r_ext_compressed_textures;		// these control use of specific extensions
+extern cvar_t *r_ext_compressed_astc;			// hardware ASTC (.ktx) texture compression (Pi 5 / ARM GPUs)
 extern cvar_t *r_ext_multitexture;
 extern cvar_t *r_ext_compiled_vertex_array;
 extern cvar_t *r_ext_texture_env_add;

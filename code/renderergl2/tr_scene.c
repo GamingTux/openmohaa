@@ -83,6 +83,9 @@ void R_InitNextFrame( void ) {
 
 	r_numtermarks = 0;
 	r_firstSceneTerMark = 0;
+
+	tr.numBodyWounds = 0;
+	Com_Memset(tr.bodyWoundHead, -1, sizeof(tr.bodyWoundHead));
 }
 
 
@@ -96,6 +99,9 @@ void RE_ClearScene( void ) {
 	r_firstSceneDlight = r_numdlights;
 	r_firstSceneEntity = r_numentities;
 	r_firstScenePoly = r_numpolys;
+
+	tr.numBodyWounds = 0;
+	Com_Memset(tr.bodyWoundHead, -1, sizeof(tr.bodyWoundHead));
 }
 
 /*
@@ -846,6 +852,39 @@ qboolean RE_AddPolyToScene2(qhandle_t hShader, int numVerts, const polyVert_t* v
 		return qfalse;
 	}
 
+	// Remaster: intercept bone-tracked body wounds for conformal 3D skeletal mesh projection
+	if ((renderfx & RF_BODY_WOUND) && numVerts == 4 && verts) {
+		int entNum = renderfx & 0x3FF;
+		if (entNum >= 0 && entNum < MAX_GENTITIES && tr.numBodyWounds < MAX_BODY_WOUNDS_FRAME) {
+			vec3_t halfU, halfV;
+			float  rad;
+			VectorSubtract(verts[1].xyz, verts[0].xyz, halfU);
+			VectorScale(halfU, 0.5f, halfU);
+			VectorSubtract(verts[3].xyz, verts[0].xyz, halfV);
+			VectorScale(halfV, 0.5f, halfV);
+			rad = VectorNormalize(halfU);
+			if (rad > 0.25f && VectorNormalize(halfV) > 0.25f) {
+				bodyWound_t *bw = &tr.bodyWounds[tr.numBodyWounds];
+				bw->entityNum = entNum;
+				bw->origin[0] = 0.25f * (verts[0].xyz[0] + verts[1].xyz[0] + verts[2].xyz[0] + verts[3].xyz[0]);
+				bw->origin[1] = 0.25f * (verts[0].xyz[1] + verts[1].xyz[1] + verts[2].xyz[1] + verts[3].xyz[1]);
+				bw->origin[2] = 0.25f * (verts[0].xyz[2] + verts[1].xyz[2] + verts[2].xyz[2] + verts[3].xyz[2]);
+				VectorCopy(halfU, bw->axisU);
+				VectorCopy(halfV, bw->axisV);
+				CrossProduct(halfU, halfV, bw->normal);
+				VectorNormalize(bw->normal);
+				bw->radius = rad;
+				bw->color[0] = verts[0].modulate[0];
+				bw->color[1] = verts[0].modulate[1];
+				bw->color[2] = verts[0].modulate[2];
+				bw->color[3] = verts[0].modulate[3];
+				bw->next = tr.bodyWoundHead[entNum];
+				tr.bodyWoundHead[entNum] = tr.numBodyWounds++;
+			}
+		}
+		return qtrue;
+	}
+
 	if (numVerts + r_numpolyverts > max_polyverts || r_numpolys >= max_polys) {
 		ri.Printf(PRINT_WARNING, "Exceeded MAX POLYS\n");
 		return qfalse;
@@ -875,14 +914,22 @@ void R_AddTerrainMarkSurfaces(void) {
     int j;
     shader_t* shader;
 
+    if (tr.viewParms.flags & (VPF_PISUNSHADOW | VPF_DEPTHSHADOW)) {
+        return;
+    }
+
+    tr.currentEntityNum = REFENTITYNUM_WORLD;
+    tr.shiftedEntityNum = tr.currentEntityNum << QSORT_REFENTITYNUM_SHIFT;
+
     for (j = 0; j < tr.refdef.numTerMarks; j++)
     {
         terMark = &tr.refdef.terMarks[j];
 
-        shader = R_GetShaderByHandle(terMark->surfaceType);
-        terMark->surfaceType = SF_MARK_FRAG;
+        shader = R_GetShaderByHandle(terMark->hShader);
         R_AddDrawSurf(&terMark->surfaceType, shader, 0, 0, 0, 0);
     }
+
+    R_AddStaticCorpseBloodPools();
 }
 
 /*
@@ -893,7 +940,7 @@ RE_AddTerrainMarkToScene
 void RE_AddTerrainMarkToScene(int iTerrainIndex, qhandle_t hShader, int numVerts, const polyVert_t* verts, int renderfx) {
     srfMarkFragment_t* terMark;
 
-    if (!tr.registered) {
+    if (!tr.registered || !backEndData || !backEndData->terMarks) {
         return;
     }
 
@@ -903,7 +950,8 @@ void RE_AddTerrainMarkToScene(int iTerrainIndex, qhandle_t hShader, int numVerts
     }
 
     terMark = &backEndData->terMarks[r_numtermarks];
-    terMark->surfaceType = hShader;
+    terMark->surfaceType = SF_MARK_FRAG;
+    terMark->hShader = hShader;
     terMark->iIndex = iTerrainIndex;
     terMark->numVerts = numVerts;
     terMark->verts = &backEndData->polyVerts[r_numpolyverts];

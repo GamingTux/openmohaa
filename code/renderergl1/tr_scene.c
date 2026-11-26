@@ -142,7 +142,7 @@ qboolean RE_AddPolyToScene(qhandle_t hShader, int numVerts, const polyVert_t* ve
 	poly->hShader = hShader;
 	poly->numVerts = numVerts;
 	poly->verts = &backEndData->polyVerts[r_numpolyverts];
-	poly->renderfx = renderfx;
+	poly->renderfx = (renderfx & RF_BODY_WOUND) ? 0 : renderfx;
 
 	Com_Memcpy(poly->verts, verts, sizeof(polyVert_t) * numVerts);
 	++r_numpolys;

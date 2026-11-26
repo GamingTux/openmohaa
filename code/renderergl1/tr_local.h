@@ -1327,7 +1327,8 @@ typedef struct {
 	image_t					*flareImage;
 	image_t					*whiteImage;			// full of 0xff
 	image_t					*identityLightImage;	// full of tr.identityLightByte
-	image_t					*bloodImages[5];		// procedural remaster blood splat/pool/mist + gunsmoke textures
+	image_t					*bloodImages[6];		// procedural remaster blood splat/pool/mist/gunsmoke/wound textures
+	qboolean				astcAvailable;			// GL_KHR_texture_compression_astc_ldr active
 	image_t					*dlightImages[15];
 
 	shader_t				*defaultShader;
@@ -1498,6 +1499,7 @@ extern cvar_t	*r_ignorehwgamma;		// overrides hardware gamma capabilities
 
 extern cvar_t	*r_allowExtensions;				// global enable/disable of OpenGL extensions
 extern cvar_t	*r_ext_compressed_textures;		// these control use of specific extensions
+extern cvar_t	*r_ext_compressed_astc;			// hardware ASTC (.ktx) texture compression (Pi 5 / ARM GPUs)
 extern cvar_t	*r_ext_gamma_control;
 extern cvar_t	*r_ext_texenv_op;
 extern cvar_t	*r_ext_multitexture;

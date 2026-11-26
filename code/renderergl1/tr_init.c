@@ -83,6 +83,7 @@ cvar_t	*r_nocurves;
 cvar_t	*r_allowExtensions;
 
 cvar_t	*r_ext_compressed_textures;
+cvar_t	*r_ext_compressed_astc;
 cvar_t	*r_ext_gamma_control;
 cvar_t	*r_ext_multitexture;
 cvar_t	*r_ext_compiled_vertex_array;
@@ -1311,6 +1312,7 @@ void R_Register( void )
 	r_glDriver = ri.Cvar_Get( "r_glDriver", OPENGL_DRIVER_NAME, CVAR_ARCHIVE | CVAR_LATCH );
 	r_allowExtensions = ri.Cvar_Get( "r_allowExtensions", "1", CVAR_ARCHIVE | CVAR_LATCH );
 	r_ext_compressed_textures = ri.Cvar_Get( "r_ext_compressed_textures", "0", CVAR_ARCHIVE | CVAR_LATCH );
+	r_ext_compressed_astc = ri.Cvar_Get( "r_ext_compressed_astc", "1", CVAR_ARCHIVE | CVAR_LATCH );
 	r_ext_gamma_control = ri.Cvar_Get( "r_ext_gamma_control", "1", CVAR_ARCHIVE | CVAR_LATCH );
 	r_ext_multitexture = ri.Cvar_Get( "r_ext_multitexture", "1", CVAR_ARCHIVE | CVAR_LATCH );
 	r_ext_compiled_vertex_array = ri.Cvar_Get( "r_ext_compiled_vertex_array", "1", CVAR_ARCHIVE | CVAR_LATCH);
@@ -1592,6 +1594,46 @@ void R_Register( void )
 }
 
 void R_InitExtensions() {
+	qboolean hasAstc = qfalse;
+
+	tr.astcAvailable = qfalse;
+	if (r_allowExtensions && r_allowExtensions->integer && qglCompressedTexImage2D) {
+		if (qglGetStringi) {
+			GLint numExt = 0, i;
+			qglGetIntegerv(GL_NUM_EXTENSIONS, &numExt);
+			for (i = 0; i < numExt; i++) {
+				const char *ext = (const char *)qglGetStringi(GL_EXTENSIONS, i);
+				if (ext && !strcmp(ext, "GL_KHR_texture_compression_astc_ldr")) {
+					hasAstc = qtrue;
+					break;
+				}
+			}
+		} else {
+			const char *exts = (const char *)qglGetString(GL_EXTENSIONS);
+			if (exts) {
+				const char *hit = strstr(exts, "GL_KHR_texture_compression_astc_ldr");
+				if (hit) {
+					char prev = (hit == exts) ? ' ' : hit[-1];
+					char next = hit[35];
+					if (prev == ' ' && (next == ' ' || next == '\0')) {
+						hasAstc = qtrue;
+					}
+				}
+			}
+		}
+
+		if (hasAstc) {
+			if (r_ext_compressed_astc && r_ext_compressed_astc->integer > 0) {
+				tr.astcAvailable = qtrue;
+				ri.Printf(PRINT_ALL, "...using GL_KHR_texture_compression_astc_ldr\n");
+			} else {
+				ri.Printf(PRINT_ALL, "...ignoring GL_KHR_texture_compression_astc_ldr\n");
+			}
+		} else {
+			ri.Printf(PRINT_ALL, "...GL_KHR_texture_compression_astc_ldr not found\n");
+		}
+	}
+
 	// FIXME: qglTextureEnvCombineExists
 #if 0
 	glState.cntTexEnvExt = 0;
