@@ -394,6 +394,7 @@ RE_GetShaderWidth
 int RE_GetShaderWidth(qhandle_t hShader)
 {
     shader_t *shader;
+    image_t  *img;
 
     if (hShader) {
         shader = R_GetShaderByHandle(hShader);
@@ -401,7 +402,8 @@ int RE_GetShaderWidth(qhandle_t hShader)
         shader = tr.defaultShader;
     }
 
-    return shader->unfoggedStages[0]->bundle[0].image[0]->uploadWidth;
+    img = shader->unfoggedStages[0]->bundle[0].image[0];
+    return img->logicalWidth ? img->logicalWidth : img->uploadWidth;
 }
 
 /*
@@ -412,6 +414,7 @@ RE_GetShaderHeight
 int RE_GetShaderHeight(qhandle_t hShader)
 {
     shader_t *shader;
+    image_t  *img;
 
     if (hShader) {
         shader = R_GetShaderByHandle(hShader);
@@ -419,7 +422,8 @@ int RE_GetShaderHeight(qhandle_t hShader)
         shader = tr.defaultShader;
     }
 
-    return shader->unfoggedStages[0]->bundle[0].image[0]->uploadHeight;
+    img = shader->unfoggedStages[0]->bundle[0].image[0];
+    return img->logicalHeight ? img->logicalHeight : img->uploadHeight;
 }
 
 /*

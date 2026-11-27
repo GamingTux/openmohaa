@@ -3640,7 +3640,7 @@ qhandle_t RE_RegisterShaderNoMip( const char *name ) {
 
 qhandle_t RE_RefreshShaderNoMip(const char* name) {
 	shader_t* sh;
-	char strippedName[64];
+	char strippedName[MAX_QPATH];
 	int hash;
 
 	if (!name || !*name) {
@@ -3657,18 +3657,38 @@ qhandle_t RE_RefreshShaderNoMip(const char* name) {
 				image_t* image;
 
 				sh = currentShader->shader;
-				image = sh->unfoggedStages[0]->bundle[0].image[0];
 				currentShader = NULL;
 
-				if (image) {
-					sh->unfoggedStages[0]->bundle[0].image[0] = R_RefreshImageFileOld(
-						image->imgName,
-						image->numMipmaps,
-						image->allowPicmip,
-						image->force32bit,
-						image->wrapClampModeX,
-						image->wrapClampModeY
-					);
+				if (!sh || sh->defaultShader || !sh->unfoggedStages[0]) {
+					return 0;
+				}
+
+				image = sh->unfoggedStages[0]->bundle[0].image[0];
+
+				{
+					const char *refreshName = (image && image->imgName[0] != '*') ? image->imgName : name;
+					qboolean refreshMip = (image && image->imgName[0] != '*') ? image->numMipmaps : qfalse;
+					qboolean refreshPicmip = (image && image->imgName[0] != '*') ? image->allowPicmip : qfalse;
+					qboolean refresh32 = (image && image->imgName[0] != '*') ? image->force32bit : qfalse;
+					int refreshWrapX = (image && image->imgName[0] != '*') ? image->wrapClampModeX : GL_CLAMP_TO_EDGE;
+					int refreshWrapY = (image && image->imgName[0] != '*') ? image->wrapClampModeY : GL_CLAMP_TO_EDGE;
+
+					if (refreshName && refreshName[0] != '*') {
+						image_t* refreshed = R_RefreshImageFileOld(
+							refreshName,
+							refreshMip,
+							refreshPicmip,
+							refresh32,
+							refreshWrapX,
+							refreshWrapY
+						);
+						if (refreshed) {
+							sh->unfoggedStages[0]->bundle[0].image[0] = refreshed;
+							return sh->index;
+						}
+						sh->unfoggedStages[0]->bundle[0].image[0] = tr.defaultImage;
+						return 0;
+					}
 				}
 
 				return sh->index;
@@ -3678,7 +3698,7 @@ qhandle_t RE_RefreshShaderNoMip(const char* name) {
 		}
 	}
 
-    sh = R_FindShader(name, -4, 0, 0, 0, 0);
+    sh = R_FindShader(name, LIGHTMAP_2D, qfalse, qfalse, qfalse, qfalse);
 	if (sh->defaultShader) {
 		return 0;
 	}

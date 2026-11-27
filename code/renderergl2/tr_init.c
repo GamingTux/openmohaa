@@ -817,52 +817,90 @@ void R_ScreenshotFilenameJPEG( int lastNumber, char *fileName ) {
 
 /*
 ====================
-R_LevelShot
+R_ResampledScreenShot
 
-levelshots are specialized 128*128 thumbnails for
-the menu system, sampled down from full screen distorted images
+Captures the rendered framebuffer and writes a box-filtered 24-bit TGA
+at (destwidth x destheight) — used for savegame thumbnails (`saveshot`).
 ====================
 */
-void R_LevelShot( void ) {
-	char		checkname[MAX_OSPATH];
+void R_ResampledScreenShot( const char *filename, int destwidth, int destheight ) {
 	byte		*buffer;
 	byte		*source, *allsource;
 	byte		*src, *dst;
-	size_t			offset = 0;
+	size_t		offset = 0;
 	int			padlen;
+	int			readW, readH;
 	int			x, y;
 	int			r, g, b;
 	float		xScale, yScale;
 	int			xx, yy;
+	FBO_t		*readFbo = NULL;
 
-	Com_sprintf(checkname, sizeof(checkname), "levelshots/%s.tga", tr.world->baseName);
+	if ( !filename || !*filename || destwidth <= 0 || destheight <= 0 ) {
+		return;
+	}
 
-	allsource = RB_ReadPixels(0, 0, glConfig.vidWidth, glConfig.vidHeight, &offset, &padlen);
+	// Ensure any scene queued by CL_SaveShot_f (UpdateStereoSide) has rendered
+	// and post-processed before reading back pixels.
+	R_IssuePendingRenderCommands();
+
+	if ( tess.numIndexes ) {
+		RB_EndSurface();
+	}
+
+	if ( glRefConfig.framebufferObject ) {
+		readFbo = RB_Get2DFbo();
+		if ( !readFbo && backEnd.renderFboCleared && !backEnd.postProcessedToScreen && tr.renderFbo ) {
+			readFbo = tr.renderFbo;
+		}
+		if ( readFbo && readFbo == tr.renderFbo && tr.msaaResolveFbo && !readFbo->colorImage[0] ) {
+			FBO_FastBlit( tr.renderFbo, NULL, tr.msaaResolveFbo, NULL, GL_COLOR_BUFFER_BIT, GL_NEAREST );
+			readFbo = tr.msaaResolveFbo;
+		}
+		FBO_Bind( readFbo );
+	}
+
+	readW = readFbo ? readFbo->width : glConfig.vidWidth;
+	readH = readFbo ? readFbo->height : glConfig.vidHeight;
+	if ( readW <= 0 || readH <= 0 ) {
+		return;
+	}
+
+	allsource = RB_ReadPixels( 0, 0, readW, readH, &offset, &padlen );
 	source = allsource + offset;
 
-	buffer = ri.Hunk_AllocateTempMemory(128 * 128*3 + 18);
-	Com_Memset (buffer, 0, 18);
-	buffer[2] = 2;		// uncompressed type
-	buffer[12] = 128;
-	buffer[14] = 128;
+	buffer = ri.Hunk_AllocateTempMemory( destheight * destwidth * 3 + 18 );
+	Com_Memset( buffer, 0, 18 );
+	buffer[2]  = 2;		// uncompressed type
+	buffer[12] = destwidth & 255;
+	buffer[13] = destwidth >> 8;
+	buffer[14] = destheight & 255;
+	buffer[15] = destheight >> 8;
 	buffer[16] = 24;	// pixel size
 
 	// resample from source
-	xScale = glConfig.vidWidth / 512.0f;
-	yScale = glConfig.vidHeight / 384.0f;
-	for ( y = 0 ; y < 128 ; y++ ) {
-		for ( x = 0 ; x < 128 ; x++ ) {
+	xScale = readW / (float)( destwidth * 4 );
+	yScale = readH / (float)( destheight * 3 );
+	for ( y = 0 ; y < destheight ; y++ ) {
+		for ( x = 0 ; x < destwidth ; x++ ) {
 			r = g = b = 0;
 			for ( yy = 0 ; yy < 3 ; yy++ ) {
+				int sy = (int)( ( y * 3 + yy ) * yScale );
+				if ( sy >= readH ) {
+					sy = readH - 1;
+				}
 				for ( xx = 0 ; xx < 4 ; xx++ ) {
-					src = source + (3 * glConfig.vidWidth + padlen) * (int)((y*3 + yy) * yScale) +
-						3 * (int) ((x*4 + xx) * xScale);
+					int sx = (int)( ( x * 4 + xx ) * xScale );
+					if ( sx >= readW ) {
+						sx = readW - 1;
+					}
+					src = source + ( 3 * readW + padlen ) * sy + 3 * sx;
 					r += src[0];
 					g += src[1];
 					b += src[2];
 				}
 			}
-			dst = buffer + 18 + 3 * ( y * 128 + x );
+			dst = buffer + 18 + 3 * ( y * destwidth + x );
 			dst[0] = b / 12;
 			dst[1] = g / 12;
 			dst[2] = r / 12;
@@ -871,13 +909,29 @@ void R_LevelShot( void ) {
 
 	// gamma correct
 	if ( glConfig.deviceSupportsGamma ) {
-		R_GammaCorrect( buffer + 18, 128 * 128 * 3 );
+		R_GammaCorrect( buffer + 18, destheight * destwidth * 3 );
 	}
 
-	ri.FS_WriteFile( checkname, buffer, 128 * 128*3 + 18 );
+	ri.FS_WriteFile( filename, buffer, destheight * destwidth * 3 + 18 );
 
-	ri.Hunk_FreeTempMemory(buffer);
-	ri.Hunk_FreeTempMemory(allsource);
+	ri.Hunk_FreeTempMemory( buffer );
+	ri.Hunk_FreeTempMemory( allsource );
+}
+
+/*
+====================
+R_LevelShot
+
+levelshots are specialized 128*128 thumbnails for
+the menu system, sampled down from full screen distorted images
+====================
+*/
+void R_LevelShot( void ) {
+	char		checkname[MAX_OSPATH];
+
+	Com_sprintf(checkname, sizeof(checkname), "levelshots/%s.tga", tr.world->baseName);
+
+	R_ResampledScreenShot( checkname, 128, 128 );
 
 	ri.Printf( PRINT_ALL, "Wrote %s\n", checkname );
 }
@@ -889,7 +943,7 @@ R_ScreenShot_f
 screenshot
 screenshot [silent]
 screenshot [levelshot]
-screenshot [filename]
+screenshot [filename] [width height]
 
 Doesn't print the pacifier message if there is a second arg
 ================== 
@@ -897,6 +951,7 @@ Doesn't print the pacifier message if there is a second arg
 void R_ScreenShot_f (void) {
 	char	checkname[MAX_OSPATH];
 	static	int	lastNumber = -1;
+	int		width, height;
 	qboolean	silent;
 
 	if ( !strcmp( ri.Cmd_Argv(1), "levelshot" ) ) {
@@ -910,9 +965,22 @@ void R_ScreenShot_f (void) {
 		silent = qfalse;
 	}
 
-	if ( ri.Cmd_Argc() == 2 && !silent ) {
-		// explicit filename
-		Com_sprintf( checkname, MAX_OSPATH, "screenshots/%s.tga", ri.Cmd_Argv( 1 ) );
+	width = 0;
+	height = 0;
+
+	if ( ri.Cmd_Argc() >= 2 && !silent ) {
+		// explicit filename (keep path verbatim if it includes '/', e.g. savegame saveshot)
+		const char *name = ri.Cmd_Argv( 1 );
+		if ( strchr( name, '/' ) ) {
+			Q_strncpyz( checkname, name, sizeof( checkname ) );
+		} else {
+			Com_sprintf( checkname, MAX_OSPATH, "screenshots/%s.tga", name );
+		}
+
+		if ( ri.Cmd_Argc() > 3 ) {
+			width = atoi( ri.Cmd_Argv( 2 ) );
+			height = atoi( ri.Cmd_Argv( 3 ) );
+		}
 	} else {
 		// scan for a free filename
 
@@ -940,10 +1008,14 @@ void R_ScreenShot_f (void) {
 		lastNumber++;
 	}
 
-	R_TakeScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qfalse );
+	if ( width > 0 && height > 0 ) {
+		R_ResampledScreenShot( checkname, width, height );
+	} else {
+		R_TakeScreenshot( 0, 0, glConfig.vidWidth, glConfig.vidHeight, checkname, qfalse );
 
-	if ( !silent ) {
-		ri.Printf (PRINT_ALL, "Wrote %s\n", checkname);
+		if ( !silent ) {
+			ri.Printf (PRINT_ALL, "Wrote %s\n", checkname);
+		}
 	}
 } 
 

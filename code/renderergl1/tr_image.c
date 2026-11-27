@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 #include "../renderercommon/tr_gore_tex.h"
 #include "../renderercommon/tr_ktx_astc.h"
+#include "../renderercommon/tr_hd_dims.h"
 
 #include <setjmp.h>
 
@@ -976,6 +977,7 @@ image_t* R_CreateImageOld(
 
 	image->width = width;
 	image->height = height;
+	R_LookupHDOrigDims(name, width, height, &image->logicalWidth, &image->logicalHeight);
 	image->wrapClampModeX = glWrapClampModeX;
 	image->wrapClampModeY = glWrapClampModeY;
 
@@ -2660,21 +2662,33 @@ R_RefreshImageFile
 ================
 */
 image_t* R_RefreshImageFileOld(const char* name, qboolean mipmap, qboolean allowPicmip, qboolean force32bit, int glWrapClampModeX, int glWrapClampModeY) {
-	char imagename[64];
+	char imagename[MAX_QPATH];
 	image_t* image;
 	long hash;
-	
-	if (!name) {
+
+	if (!name || !*name) {
 		return NULL;
 	}
 
-	strncpy(imagename, name, ARRAY_LEN(imagename));
-	hash = generateHashValue(name);
+	// Never free internal built-in images (*white, *default, etc.)
+	if (name[0] == '*') {
+		return R_FindImageFileOld(
+			name,
+			mipmap,
+			allowPicmip,
+			force32bit,
+			glWrapClampModeX,
+			glWrapClampModeY
+		);
+	}
+
+	Q_strncpyz(imagename, name, sizeof(imagename));
+	hash = generateHashValue(imagename);
 	image = hashTable[hash];
 
     if (image)
     {
-        while (strcmp(name, image->imgName))
+        while (strcmp(imagename, image->imgName))
         {
             image = image->next;
 			if (!image) {
@@ -2989,6 +3003,7 @@ void	R_InitImages( void ) {
 	// clear images
 	Com_Memset(tr.images, 0, sizeof(tr.images));
 	tr.numImages = 0;
+	R_ResetHDOrigDims();
 
 	// build brightness translation tables
 	R_SetColorMappings();

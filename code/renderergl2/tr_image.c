@@ -23,6 +23,7 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 #include "tr_local.h"
 #include "../renderercommon/tr_gore_tex.h"
 #include "../renderercommon/tr_ktx_astc.h"
+#include "../renderercommon/tr_hd_dims.h"
 
 #include "tr_dsa.h"
 
@@ -2213,6 +2214,7 @@ image_t *R_CreateImage2( const char *name, byte *pic, int width, int height, GLe
 
 	image->width = width;
 	image->height = height;
+	R_LookupHDOrigDims(name, width, height, &image->logicalWidth, &image->logicalHeight);
 	if (flags & IMGFLAG_CLAMPTOEDGE)
 		glWrapClampMode = GL_CLAMP_TO_EDGE;
 	else
@@ -3160,6 +3162,7 @@ R_InitImages
 */
 void	R_InitImages( void ) {
 	Com_Memset(hashTable, 0, sizeof(hashTable));
+	R_ResetHDOrigDims();
 	// build brightness translation tables
 	R_SetColorMappings();
 
@@ -3519,9 +3522,70 @@ void	R_SkinList_f( void ) {
 // OPENMOHAA-specific stuff
 //
 
+static void R_FreeImage( image_t *image ) {
+	int i;
+	long hash;
+	image_t **pp;
+
+	if ( !image ) {
+		return;
+	}
+
+	hash = generateHashValue( image->imgName );
+	pp = &hashTable[hash];
+	while ( *pp ) {
+		if ( *pp == image ) {
+			*pp = (*pp)->next;
+			break;
+		}
+		pp = &(*pp)->next;
+	}
+	image->next = NULL;
+
+	if ( image->texnum ) {
+		qglDeleteTextures( 1, &image->texnum );
+		image->texnum = 0;
+		GL_BindNullTextures();
+	}
+
+	for ( i = 0; i < tr.numImages; i++ ) {
+		if ( tr.images[i] == image ) {
+			tr.images[i] = tr.images[tr.numImages - 1];
+			tr.images[tr.numImages - 1] = NULL;
+			tr.numImages--;
+			break;
+		}
+	}
+}
+
 image_t* R_RefreshImageFile(const char* name, imgType_t type, imgFlags_t flags) {
-	// FIXME: unimplemented (GL2)
-	return NULL;
+	char localName[MAX_QPATH];
+	image_t *image;
+	long hash;
+
+	if (!name || !*name) {
+		return NULL;
+	}
+
+	// Never free internal built-in images (*white, *default, etc.)
+	if (name[0] == '*') {
+		return R_FindImageFile(name, type, flags);
+	}
+
+	// Copy name first in case it aliases image->imgName
+	Q_strncpyz(localName, name, sizeof(localName));
+
+	R_IssuePendingRenderCommands();
+
+	hash = generateHashValue(localName);
+	for (image = hashTable[hash]; image; image = image->next) {
+		if (!strcmp(localName, image->imgName)) {
+			R_FreeImage(image);
+			break;
+		}
+	}
+
+	return R_FindImageFile(localName, type, flags);
 }
 
 /*

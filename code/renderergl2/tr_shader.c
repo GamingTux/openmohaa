@@ -5732,7 +5732,7 @@ static void CreateMultistageFromBundle() {
 
 qhandle_t RE_RefreshShaderNoMip(const char* name) {
 	shader_t* sh;
-	char strippedName[64];
+	char strippedName[MAX_QPATH];
 	int hash;
 
 	if (!name || !*name) {
@@ -5742,22 +5742,52 @@ qhandle_t RE_RefreshShaderNoMip(const char* name) {
 	COM_StripExtension(name, strippedName, sizeof(strippedName));
 
 	hash = generateHashValue(strippedName, FILE_HASH_SIZE);
-	
+
 	for (sh = hashTable[hash]; sh; sh = sh->next) {
 		if (Q_stricmp(sh->name, strippedName) == 0) {
-			image_t* image;
+			// If a previous lookup failed (defaultShader / no stages, e.g. savegame
+			// without a thumbnail), only unlink & re-register if the image exists now.
+			if (sh->defaultShader || !sh->stages[0]) {
+				image_t *probe = R_FindImageFile(name, IMGTYPE_COLORALPHA, IMGFLAG_CLAMPTOEDGE);
+				if (!probe) {
+					return 0;
+				}
+				{
+					shader_t **pp = &hashTable[hash];
+					while (*pp) {
+						if (*pp == sh) {
+							*pp = (*pp)->next;
+							break;
+						}
+						pp = &(*pp)->next;
+					}
+				}
+				break;
+			}
 
-			image = sh->stages[0]->bundle[0].image[0];
+			{
+				image_t* image = sh->stages[0]->bundle[0].image[0];
+				const char *refreshName = (image && image->imgName[0] != '*') ? image->imgName : name;
+				imgType_t refreshType = (image && image->imgName[0] != '*') ? image->type : IMGTYPE_COLORALPHA;
+				imgFlags_t refreshFlags = (image && image->imgName[0] != '*') ? image->flags : IMGFLAG_CLAMPTOEDGE;
 
-			if (image) {
-				sh->stages[0]->bundle[0].image[0] = R_RefreshImageFile(image->imgName, IMGTYPE_COLORALPHA, image->flags);
+				if (refreshName && refreshName[0] != '*') {
+					image_t* refreshed = R_RefreshImageFile(refreshName, refreshType, refreshFlags);
+					if (refreshed) {
+						sh->stages[0]->bundle[0].image[0] = refreshed;
+						return sh->index;
+					}
+					// Keep a valid fallback texture so drawing never dereferences NULL
+					sh->stages[0]->bundle[0].image[0] = tr.defaultImage;
+					return 0;
+				}
 			}
 
 			return sh->index;
 		}
 	}
 
-	sh = R_FindShader(name, -4, qfalse);
+	sh = R_FindShader(name, LIGHTMAP_2D, qfalse);
 	if (sh->defaultShader) {
 		return 0;
 	}

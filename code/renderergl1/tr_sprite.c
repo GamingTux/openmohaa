@@ -45,8 +45,8 @@ sprite_t *SPR_RegisterSprite(const char *name)
 			return 0;
 		}
 		spr = ri.Hunk_Alloc(sizeof(sprite_t), h_dontcare);
-		spr->height = spriteImage->height;
-		spr->width = spriteImage->width;
+		spr->height = spriteImage->logicalHeight ? spriteImage->logicalHeight : spriteImage->height;
+		spr->width = spriteImage->logicalWidth ? spriteImage->logicalWidth : spriteImage->width;
 		spr->origin_x = spr->width * 0.5;
 		spr->origin_y = spr->height * 0.5;
 		spr->shader = shader;

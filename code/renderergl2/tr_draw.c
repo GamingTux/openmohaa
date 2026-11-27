@@ -83,8 +83,9 @@ void Draw_StretchPic(float x, float y, float w, float h, float s1, float t1, flo
     }
 
     if (w <= 0) {
-        w = shader->stages[0]->bundle[0].image[0]->width;
-        h = shader->stages[0]->bundle[0].image[0]->height;
+        image_t *img = shader->stages[0]->bundle[0].image[0];
+        w = img->logicalWidth ? img->logicalWidth : img->width;
+        h = img->logicalHeight ? img->logicalHeight : img->height;
     }
 
     // draw the pic
@@ -135,8 +136,9 @@ void Draw_StretchPic2(float x, float y, float w, float h, float s1, float t1, fl
     }
 
     if (w <= 0) {
-        w = shader->stages[0]->bundle[0].image[0]->width;
-        h = shader->stages[0]->bundle[0].image[0]->height;
+        image_t *img = shader->stages[0]->bundle[0].image[0];
+        w = img->logicalWidth ? img->logicalWidth : img->width;
+        h = img->logicalHeight ? img->logicalHeight : img->height;
     }
 
     halfWidth = w * 0.5f;
@@ -174,6 +176,7 @@ Draw_TilePic
 */
 void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
     shader_t* shader;
+    image_t*    img;
     float        picw, pich;
 
     R_IssuePendingRenderCommands();
@@ -188,13 +191,14 @@ void Draw_TilePic(float x, float y, float w, float h, qhandle_t hShader) {
         shader = tr.defaultShader;
     }
 
+    img = shader->stages[0]->bundle[0].image[0];
     if (w <= 0) {
-        w = shader->stages[0]->bundle[0].image[0]->width;
-        h = shader->stages[0]->bundle[0].image[0]->height;
+        w = img->logicalWidth ? img->logicalWidth : img->width;
+        h = img->logicalHeight ? img->logicalHeight : img->height;
     }
 
-    picw = shader->stages[0]->bundle[0].image[0]->uploadWidth;
-    pich = shader->stages[0]->bundle[0].image[0]->uploadHeight;
+    picw = img->logicalWidth ? img->logicalWidth : img->uploadWidth;
+    pich = img->logicalHeight ? img->logicalHeight : img->uploadHeight;
 
     // draw the pic
     RB_CheckVao(tess.vao);
@@ -224,6 +228,7 @@ Draw_TilePicOffset
 */
 void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, int offsetX, int offsetY) {
     shader_t* shader;
+    image_t*    img;
     float        picw, pich;
 
     R_IssuePendingRenderCommands();
@@ -238,13 +243,14 @@ void Draw_TilePicOffset(float x, float y, float w, float h, qhandle_t hShader, i
         shader = tr.defaultShader;
     }
 
+    img = shader->stages[0]->bundle[0].image[0];
     if (w <= 0) {
-        w = shader->stages[0]->bundle[0].image[0]->width;
-        h = shader->stages[0]->bundle[0].image[0]->height;
+        w = img->logicalWidth ? img->logicalWidth : img->width;
+        h = img->logicalHeight ? img->logicalHeight : img->height;
     }
 
-    picw = shader->stages[0]->bundle[0].image[0]->uploadWidth;
-    pich = shader->stages[0]->bundle[0].image[0]->uploadHeight;
+    picw = img->logicalWidth ? img->logicalWidth : img->uploadWidth;
+    pich = img->logicalHeight ? img->logicalHeight : img->uploadHeight;
 
     // draw the pic
     RB_CheckVao(tess.vao);
