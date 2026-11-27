@@ -49,6 +49,11 @@ target_compile_definitions(     ${SERVER_BINARY} PRIVATE ${SERVER_DEFINITIONS})
 target_compile_options(         ${SERVER_BINARY} PRIVATE ${SERVER_COMPILE_OPTIONS})
 target_link_libraries(          ${SERVER_BINARY} PRIVATE ${COMMON_LIBRARIES} ${SERVER_LIBRARIES})
 target_link_options(            ${SERVER_BINARY} PRIVATE ${SERVER_LINK_OPTIONS})
+if(APPLE)
+    target_link_options(        ${SERVER_BINARY} PRIVATE
+        "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-Wl,-no_exported_symbols>"
+    )
+endif()
 
 set_output_dirs(${SERVER_BINARY})
 

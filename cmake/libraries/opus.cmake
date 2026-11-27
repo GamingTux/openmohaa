@@ -16,6 +16,11 @@ if(USE_INTERNAL_OPUS)
     file(GLOB_RECURSE OPUS_SOURCES ${INTERNAL_OPUS_DIR}/*.c)
     file(GLOB_RECURSE OPUSFILE_SOURCES ${INTERNAL_OPUSFILE_DIR}/*.c)
     disable_warnings(${OPUS_SOURCES} ${OPUSFILE_SOURCES})
+    if(NOT MSVC)
+        set_property(SOURCE ${OPUS_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
+            "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-fno-signed-zeros;-fassociative-math;-freciprocal-math>"
+        )
+    endif()
     find_include_dirs(OPUS_INCLUDE_DIRS ${INTERNAL_OPUS_DIR})
     find_include_dirs(OPUSFILE_INCLUDE_DIRS ${INTERNAL_OPUSFILE_DIR})
     set(OPUS_DEFINITIONS OPUS_BUILD HAVE_LRINTF FLOATING_POINT FLOAT_APPROX USE_ALLOCA)

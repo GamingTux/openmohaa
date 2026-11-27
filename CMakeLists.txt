@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.25)
 
+# Ensure vendored subprojects with older cmake_minimum_required (e.g. libmad)
+# honor CMAKE_INTERPROCEDURAL_OPTIMIZATION (LTO).
+set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
+
 if(POLICY CMP0177)
     # Policy CMP0177: install() DESTINATION paths are normalized
     # Introduced in CMake 3.31

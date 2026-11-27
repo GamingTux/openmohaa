@@ -26,8 +26,8 @@ add_compile_options(-fno-strict-aliasing)
 add_compile_options(-fsigned-char)
 
 if(OPTIMIZE_PI5)
-    add_compile_options(-mcpu=cortex-a76)
-elseif(OPTIMIZE_NATIVE)
+    add_compile_options(-mcpu=cortex-a76+crypto)
+elseif(OPTIMIZE_NATIVE AND NOT APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|arm)")
         add_compile_options(-mcpu=native)
     else()
@@ -37,17 +37,32 @@ endif()
 
 # Release / RelWithDebInfo runtime performance flags (GCC, Clang, AppleClang)
 set(_GNU_OPT_COND "$<AND:$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>")
+set(_GNU_CXX_OPT_COND "$<AND:$<COMPILE_LANGUAGE:CXX>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>")
+set(_GNU_REL_COND "$<AND:$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>,$<CONFIG:Release>>")
 set(_GNU_OPT_LINK_COND "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>")
 
 add_compile_options(
     "$<${_GNU_OPT_COND}:-O3;-fno-math-errno;-fno-trapping-math;-ffp-contract=fast;-ffunction-sections;-fdata-sections>"
+    "$<${_GNU_CXX_OPT_COND}:-fno-rtti;-fvisibility-inlines-hidden>"
 )
 
 if(UNIX AND NOT APPLE)
     # Unlock cross-TU LTO inlining and direct calls inside shared libraries (.so)
     add_compile_options(
         "$<${_GNU_OPT_COND}:-fno-semantic-interposition;-fomit-frame-pointer>"
+        # Hide non-Q_EXPORT symbols in Release for dead-symbol stripping & IPA;
+        # keep RelWithDebInfo .dynsym intact for glibc backtrace_symbols().
+        "$<${_GNU_REL_COND}:-fvisibility=hidden>"
     )
+    if(CMAKE_C_COMPILER_ID STREQUAL "GNU")
+        add_compile_options("$<${_GNU_OPT_COND}:-fno-plt>")
+    else()
+        # Clang 14 supports -fno-plt on x86_64; avoid unused-arg warnings on older arm64 Clang
+        include(utils/arch)
+        if(ARCH MATCHES "x86_64")
+            add_compile_options("$<${_GNU_OPT_COND}:-fno-plt>")
+        endif()
+    endif()
     add_link_options(
         "$<${_GNU_OPT_LINK_COND}:-Wl,-Bsymbolic-functions;-Wl,--gc-sections;-Wl,-O1>"
     )

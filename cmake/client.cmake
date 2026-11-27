@@ -114,6 +114,11 @@ target_compile_definitions(     ${CLIENT_BINARY} PRIVATE ${CLIENT_DEFINITIONS})
 target_compile_options(         ${CLIENT_BINARY} PRIVATE ${CLIENT_COMPILE_OPTIONS})
 target_link_libraries(          ${CLIENT_BINARY} PRIVATE ${COMMON_LIBRARIES} ${CLIENT_LIBRARIES})
 target_link_options(            ${CLIENT_BINARY} PRIVATE ${CLIENT_LINK_OPTIONS})
+if(APPLE)
+    target_link_options(        ${CLIENT_BINARY} PRIVATE
+        "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-Wl,-no_exported_symbols>"
+    )
+endif()
 
 set_output_dirs(${CLIENT_BINARY})
 

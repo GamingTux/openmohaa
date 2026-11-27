@@ -12,6 +12,13 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 if(USE_INTERNAL_MAD)
 	add_subdirectory("${SOURCE_DIR}/thirdparty/libmad" "./libmad" EXCLUDE_FROM_ALL)
 
+	if(IPO_SUPPORTED)
+		set_target_properties(mad PROPERTIES
+			INTERPROCEDURAL_OPTIMIZATION TRUE
+			INTERPROCEDURAL_OPTIMIZATION_DEBUG FALSE
+		)
+	endif()
+
     list(APPEND CLIENT_LIBRARIES mad)
 else()
 	include(FindPackageHandleStandardArgs)

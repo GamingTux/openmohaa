@@ -13,6 +13,11 @@ set(INTERNAL_VORBIS_DIR ${SOURCE_DIR}/thirdparty/libvorbis-1.3.7)
 if(USE_INTERNAL_VORBIS)
     file(GLOB_RECURSE VORBIS_SOURCES ${INTERNAL_VORBIS_DIR}/*.c)
     disable_warnings(${VORBIS_SOURCES})
+    if(NOT MSVC)
+        set_property(SOURCE ${VORBIS_SOURCES} APPEND PROPERTY COMPILE_OPTIONS
+            "$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-fno-signed-zeros;-fassociative-math;-freciprocal-math>"
+        )
+    endif()
     set(VORBIS_INCLUDE_DIRS ${INTERNAL_VORBIS_DIR}/include ${INTERNAL_VORBIS_DIR}/lib)
     list(APPEND CLIENT_LIBRARY_SOURCES ${VORBIS_SOURCES})
 else()

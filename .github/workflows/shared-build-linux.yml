@@ -25,8 +25,8 @@ jobs:
     strategy:
       matrix:
         architecture: [
-          {name: 'amd64',   os: "ubuntu-22.04-arm", package: 'x86-64-linux-gnu',      triple: 'x86_64-linux-gnu',      arch_option: 'linux-x86_64'},
-          {name: 'arm64',   os: "ubuntu-22.04-arm", package: 'aarch64-linux-gnu',     triple: 'aarch64-linux-gnu',     arch_option: 'linux-aarch64'}
+          {name: 'amd64',   os: "ubuntu-22.04-arm", package: 'x86-64-linux-gnu',      triple: 'x86_64-linux-gnu',      arch_option: 'linux-x86_64',  opt_flags: '-march=x86-64-v2 -mtune=generic'},
+          {name: 'arm64',   os: "ubuntu-22.04-arm", package: 'aarch64-linux-gnu',     triple: 'aarch64-linux-gnu',     arch_option: 'linux-aarch64', opt_flags: '-march=armv8-a -mtune=cortex-a76 -moutline-atomics'}
         ]
 
     name: "Building for platform linux-${{matrix.architecture.name}}"
@@ -46,8 +46,8 @@ jobs:
     - uses: awalsh128/cache-apt-pkgs-action@latest
       name: Install required packages
       with:
-        packages: flex bison ninja-build cmake clang libpulse-dev portaudio19-dev libasound2-dev libjack-dev libpipewire-0.3-dev qtbase5-dev libdbus-1-dev
-        version: "${{ runner.os }}-${{ runner.arch }}-v1"
+        packages: flex bison ninja-build cmake clang lld libpulse-dev portaudio19-dev libasound2-dev libjack-dev libpipewire-0.3-dev qtbase5-dev libdbus-1-dev
+        version: "${{ runner.os }}-${{ runner.arch }}-v2"
 
     - name: Settings
       working-directory: ${{github.workspace}}
@@ -207,8 +207,13 @@ jobs:
 
     - name: CMake Settings
       run: |
+        echo "CFLAGS=--target=${{ matrix.architecture.triple }} ${{ matrix.architecture.opt_flags }}" >> $GITHUB_ENV
+        echo "CXXFLAGS=--target=${{ matrix.architecture.triple }} ${{ matrix.architecture.opt_flags }}" >> $GITHUB_ENV
         echo "CMAKE_PARAM=--log-level=VERBOSE \
         -DCMAKE_INSTALL_PREFIX='${{github.workspace}}/install' \
+        -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld \
+        -DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld \
+        -DCMAKE_MODULE_LINKER_FLAGS=-fuse-ld=lld \
         -DUSE_INTERNAL_SDL=OFF \
         -DSDL2_DIR='${{github.workspace}}/thirdparties/SDL2/install/lib/cmake/SDL2' \
         -DOPENAL_LIBRARY='${{github.workspace}}/thirdparties/soft-oal' \

@@ -56,11 +56,17 @@ add_compile_options(/we4715)
 
 # Release / RelWithDebInfo runtime performance flags (Windows x64 & ARM64)
 set(_MSVC_OPT_COND "$<AND:$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>")
+set(_MSVC_CXX_OPT_COND "$<AND:$<COMPILE_LANGUAGE:CXX>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>")
 set(_MSVC_OPT_LINK_COND "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>")
 
 add_compile_options(
-    "$<${_MSVC_OPT_COND}:/O2;/Ob2;/Oi;/Ot;/Gy;/Gw>"
+    "$<${_MSVC_OPT_COND}:/O2;/Ob3;/Oi;/Ot;/Gy;/Gw;/fp:contract>"
+    "$<${_MSVC_CXX_OPT_COND}:/GR->"
 )
+if(ARCH MATCHES "arm64")
+    # Inline ARMv8.1 LSE atomics & RDMA on Windows ARM64
+    add_compile_options("$<${_MSVC_OPT_COND}:/arch:armv8.1>")
+endif()
 add_link_options(
-    "$<${_MSVC_OPT_LINK_COND}:/INCREMENTAL:NO;/OPT:REF;/OPT:ICF>"
+    "$<${_MSVC_OPT_LINK_COND}:/INCREMENTAL:NO;/OPT:REF;/OPT:NOICF>"
 )
