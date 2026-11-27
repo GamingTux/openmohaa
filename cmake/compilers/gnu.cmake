@@ -35,6 +35,29 @@ elseif(OPTIMIZE_NATIVE)
     endif()
 endif()
 
+# Release / RelWithDebInfo runtime performance flags (GCC, Clang, AppleClang)
+set(_GNU_OPT_COND "$<AND:$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>")
+set(_GNU_OPT_LINK_COND "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>")
+
+add_compile_options(
+    "$<${_GNU_OPT_COND}:-O3;-fno-math-errno;-fno-trapping-math;-ffp-contract=fast;-ffunction-sections;-fdata-sections>"
+)
+
+if(UNIX AND NOT APPLE)
+    # Unlock cross-TU LTO inlining and direct calls inside shared libraries (.so)
+    add_compile_options(
+        "$<${_GNU_OPT_COND}:-fno-semantic-interposition;-fomit-frame-pointer>"
+    )
+    add_link_options(
+        "$<${_GNU_OPT_LINK_COND}:-Wl,-Bsymbolic-functions;-Wl,--gc-sections;-Wl,-O1>"
+    )
+endif()
+
+if(CMAKE_C_COMPILER_ID STREQUAL "GNU" AND IPO_SUPPORTED)
+    # Whole-program single-partition LTO (slower link, maximum cross-file inlining)
+    add_link_options("$<${_GNU_OPT_LINK_COND}:-flto-partition=one>")
+endif()
+
 # This is necessary to hide all symbols unless explicitly exported
 # via the Q_EXPORT macro
 #add_compile_options(-fvisibility=hidden)

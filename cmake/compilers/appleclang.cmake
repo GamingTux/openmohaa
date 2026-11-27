@@ -12,4 +12,5 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang" OR CMAKE_C_COMPILER_ID STREQUAL "GNU")
 	# using functions in the executable
 	# it's ok to hide them because the backtrace on macOS will still print the name of the functions
 	add_compile_options(-fvisibility=hidden)
+	add_link_options("$<$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>:-Wl,-dead_strip>")
 endif()

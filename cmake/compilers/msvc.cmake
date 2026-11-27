@@ -53,3 +53,14 @@ add_compile_definitions(_CRT_NONSTDC_NO_DEPRECATE)
 
 # Treat no return type as error
 add_compile_options(/we4715)
+
+# Release / RelWithDebInfo runtime performance flags (Windows x64 & ARM64)
+set(_MSVC_OPT_COND "$<AND:$<OR:$<COMPILE_LANGUAGE:C>,$<COMPILE_LANGUAGE:CXX>>,$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>>")
+set(_MSVC_OPT_LINK_COND "$<OR:$<CONFIG:Release>,$<CONFIG:RelWithDebInfo>>")
+
+add_compile_options(
+    "$<${_MSVC_OPT_COND}:/O2;/Ob2;/Oi;/Ot;/Gy;/Gw>"
+)
+add_link_options(
+    "$<${_MSVC_OPT_LINK_COND}:/INCREMENTAL:NO;/OPT:REF;/OPT:ICF>"
+)
